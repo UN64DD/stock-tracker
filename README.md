@@ -72,6 +72,20 @@ Production output is written to `dist/`. Preview it locally with:
 npm run preview
 ```
 
+### Running the API server in production
+
+The proxy is a standard Node service. Build it once, then start it:
+
+```bash
+npm --prefix server run build   # compiles TypeScript to server/dist
+npm --prefix server start       # node dist/index.js, listens on PORT (default 3001)
+```
+
+In production, place the built frontend (`dist/`) behind the same origin as the
+API server (or set `VITE_API_BASE_URL` at build time to the server's public URL)
+and set `CORS_ORIGIN` in `server/.env` to that origin. The API key is read only
+from `server/.env` on the server host.
+
 ## Other Scripts
 
 | Command                    | Description                                        |
@@ -131,7 +145,9 @@ Browser ──/api/*──▶ Vite dev proxy ──▶ Express (holds STOCK_API_
 
 All `/api/stocks/*` responses use an envelope:
 `{ data, meta: { provider, cached, stale, fetchedAt, dataStatus, dataStatusNote } }`.
-Errors use `{ error: { code, message, details? } }`.
+Errors use `{ error: { code, message, details? } }`. (`/api/health` returns a
+plain object, not the envelope.) Responses also include an `X-Data-Cache` header
+of `hit`, `stale`, or `miss`.
 
 | Method & path                          | Description                                      |
 | -------------------------------------- | ------------------------------------------------ |
@@ -153,6 +169,19 @@ bodies.
   symbols per query and **global search** up to 5; results are cached and
   debounced. Occasional `429` responses are surfaced as a friendly retry message.
 - Company fundamentals are hidden on the free plan (see above).
+
+### Server scripts
+
+Run these inside `server/` (or with `npm --prefix server run <script>`):
+
+| Script        | Description                                    |
+| ------------- | ---------------------------------------------- |
+| `dev`         | Start the proxy with `tsx watch`               |
+| `build`       | Compile TypeScript to `server/dist`            |
+| `start`       | Run the compiled server (`node dist/index.js`) |
+| `typecheck`   | Type-check the server without emitting         |
+| `test`        | Run the Vitest suite once                      |
+| `test:watch`  | Run Vitest in watch mode                       |
 
 ### Server tests
 
