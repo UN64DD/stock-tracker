@@ -6,13 +6,25 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { SearchX } from 'lucide-react'
-import { searchStocks } from '@/lib/stocks'
+import { LoaderCircle, SearchX } from 'lucide-react'
 import { formatCurrency } from '@/lib/format'
+import { accentForSymbol } from '@/lib/liveStock'
 import { cn } from '@/lib/utils'
 import { SearchInput } from '@/components/common/SearchInput'
 import { PriceChange } from '@/components/common/PriceChange'
 import { SymbolBadge } from '@/components/common/StockRow'
+import { useQuotes, useSymbolSearch } from '@/hooks/useMarketData'
+
+const SEARCH_LIMIT = 5
+
+interface SearchItem {
+  symbol: string
+  name: string
+  price: number | null
+  change: number
+  changePercent: number
+  accent: string
+}
 
 export function GlobalSearch() {
   const navigate = useNavigate()
@@ -21,10 +33,27 @@ export function GlobalSearch() {
   const [activeIndex, setActiveIndex] = useState(0)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const results = useMemo(
-    () => (query.trim() ? searchStocks(query).slice(0, 6) : []),
-    [query],
+  const search = useSymbolSearch(query, SEARCH_LIMIT)
+  const symbols = useMemo(
+    () => (search.data ?? []).map((item) => item.symbol),
+    [search.data],
   )
+  const quotesState = useQuotes(symbols)
+
+  const results = useMemo<SearchItem[]>(() => {
+    const quotes = quotesState.data?.quotes ?? {}
+    return (search.data ?? []).map((item) => {
+      const quote = quotes[item.symbol]
+      return {
+        symbol: item.symbol,
+        name: quote?.name ?? item.name,
+        price: quote?.price ?? null,
+        change: quote?.change ?? 0,
+        changePercent: quote?.changePercent ?? 0,
+        accent: accentForSymbol(item.symbol),
+      }
+    })
+  }, [search.data, quotesState.data])
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -63,6 +92,7 @@ export function GlobalSearch() {
   }
 
   const showPanel = open && query.trim().length > 0
+  const loading = search.loading || (symbols.length > 0 && quotesState.loading)
 
   return (
     <div ref={containerRef} className="relative w-full max-w-sm">
@@ -87,7 +117,12 @@ export function GlobalSearch() {
           role="listbox"
           className="absolute z-50 mt-2 w-full overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg"
         >
-          {results.length === 0 ? (
+          {loading && results.length === 0 ? (
+            <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
+              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+              Searching…
+            </div>
+          ) : results.length === 0 ? (
             <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
               <SearchX className="size-4" aria-hidden="true" />
               No stocks match “{query}”
@@ -121,15 +156,17 @@ export function GlobalSearch() {
                 </span>
                 <span className="flex flex-col items-end text-right">
                   <span className="text-sm font-medium tabular-nums text-foreground">
-                    {formatCurrency(stock.price)}
+                    {stock.price != null ? formatCurrency(stock.price) : '—'}
                   </span>
-                  <PriceChange
-                    change={stock.change}
-                    changePercent={stock.changePercent}
-                    showAbsolute={false}
-                    showIcon={false}
-                    className="text-xs"
-                  />
+                  {stock.price != null ? (
+                    <PriceChange
+                      change={stock.change}
+                      changePercent={stock.changePercent}
+                      showAbsolute={false}
+                      showIcon={false}
+                      className="text-xs"
+                    />
+                  ) : null}
                 </span>
               </button>
             ))

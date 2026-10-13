@@ -156,7 +156,7 @@ export function StockTable({
               />
             </TableCell>
             <TableCell className="hidden text-right tabular-nums text-muted-foreground lg:table-cell">
-              {formatMarketCap(stock.marketCap)}
+              {stock.marketCap > 0 ? formatMarketCap(stock.marketCap) : '—'}
             </TableCell>
             <TableCell>
               <div className="flex items-center justify-end gap-1">

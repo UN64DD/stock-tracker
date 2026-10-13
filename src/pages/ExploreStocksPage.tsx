@@ -1,36 +1,72 @@
 import { useMemo, useState } from 'react'
-import { ChartLine } from 'lucide-react'
+import { ChartLine, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { DemoBadge } from '@/components/common/DemoBadge'
+import { LiveBadge } from '@/components/common/LiveBadge'
 import { SearchInput } from '@/components/common/SearchInput'
 import { StockTable } from '@/components/common/StockTable'
 import { EmptyState } from '@/components/common/EmptyState'
+import { ErrorState } from '@/components/common/ErrorState'
+import { LoadingState } from '@/components/common/LoadingState'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
-import { stocks } from '@/mocks/stocks'
-import {
-  searchStocks,
-  sortStocks,
-  type SortDirection,
-  type StockSortKey,
-} from '@/lib/stocks'
+import { isApiError, type Quote } from '@/lib/api'
+import { toStockView } from '@/lib/liveStock'
+import { sortStocks, type SortDirection, type StockSortKey } from '@/lib/stocks'
+import { useQuotes, useSymbolSearch } from '@/hooks/useMarketData'
 
-const sectors = Array.from(new Set(stocks.map((stock) => stock.sector))).sort()
+const POPULAR_SYMBOLS = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA']
+const SEARCH_LIMIT = 12
+const QUOTE_LIMIT = 6
+
+function describeError(error: unknown): string {
+  if (isApiError(error)) {
+    if (error.code === 'provider_rate_limited') {
+      return 'The free market data tier rate limit was reached. Wait a minute and try again.'
+    }
+    if (error.code === 'network_error') {
+      return 'The market data API server could not be reached. Start it with "npm run dev:server".'
+    }
+    return error.message
+  }
+  return 'Something went wrong while loading live quotes.'
+}
 
 export function ExploreStocksPage() {
   const [query, setQuery] = useState('')
-  const [sector, setSector] = useState('all')
   const [sortKey, setSortKey] = useState<StockSortKey>('changePercent')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
-  const results = useMemo(() => {
-    const searched = searchStocks(query)
-    const filtered =
-      sector === 'all'
-        ? searched
-        : searched.filter((stock) => stock.sector === sector)
-    return sortStocks(filtered, sortKey, sortDirection)
-  }, [query, sector, sortKey, sortDirection])
+  const isSearching = query.trim().length > 0
+  const search = useSymbolSearch(query, SEARCH_LIMIT)
+
+  const symbols = useMemo(() => {
+    if (!isSearching) return POPULAR_SYMBOLS
+    return (search.data ?? []).slice(0, QUOTE_LIMIT).map((item) => item.symbol)
+  }, [isSearching, search.data])
+
+  const quotesState = useQuotes(symbols)
+
+  const stocks = useMemo(() => {
+    const quotes = quotesState.data?.quotes ?? {}
+    return symbols
+      .map((symbol) => quotes[symbol])
+      .filter((quote): quote is Quote => Boolean(quote))
+      .map((quote) => toStockView(quote))
+  }, [symbols, quotesState.data])
+
+  const sorted = useMemo(
+    () => sortStocks(stocks, sortKey, sortDirection),
+    [stocks, sortKey, sortDirection],
+  )
+
+  const loading = isSearching
+    ? search.loading || quotesState.loading
+    : quotesState.loading
+  const error = isSearching
+    ? (search.error ?? quotesState.error)
+    : quotesState.error
+  const meta = quotesState.meta ?? search.meta
 
   const handleSortChange = (key: StockSortKey) => {
     if (key === sortKey) {
@@ -41,12 +77,17 @@ export function ExploreStocksPage() {
     }
   }
 
+  const handleRefresh = () => {
+    search.reload()
+    quotesState.reload()
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Explore Stocks"
-        description="Search and sort a mock universe of symbols. Everything here is illustrative demo data."
-        badge={<DemoBadge label={`${stocks.length} mock symbols`} />}
+        description="Search live symbols and view real-time quotes. Popular symbols are shown until you search."
+        badge={meta ? <LiveBadge status={meta.dataStatus} cached={meta.cached} stale={meta.stale} /> : null}
       />
 
       <Card className="p-4">
@@ -55,26 +96,9 @@ export function ExploreStocksPage() {
             <SearchInput
               value={query}
               onValueChange={setQuery}
-              placeholder="Search by symbol, company, or sector…"
+              placeholder="Search any symbol or company (e.g. AAPL, Tesla)…"
               aria-label="Search stocks"
             />
-          </div>
-          <div>
-            <label htmlFor="sector-filter" className="sr-only">
-              Filter by sector
-            </label>
-            <Select
-              id="sector-filter"
-              value={sector}
-              onChange={(event) => setSector(event.target.value)}
-            >
-              <option value="all">All sectors</option>
-              {sectors.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </Select>
           </div>
           <div>
             <label htmlFor="sort-key" className="sr-only">
@@ -89,29 +113,54 @@ export function ExploreStocksPage() {
             >
               <option value="changePercent">Sort by % change</option>
               <option value="price">Sort by price</option>
-              <option value="marketCap">Sort by market cap</option>
               <option value="name">Sort by company</option>
               <option value="symbol">Sort by symbol</option>
             </Select>
           </div>
+          <div className="flex items-center">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRefresh}
+              className="w-full"
+            >
+              <RefreshCw aria-hidden="true" />
+              Refresh
+            </Button>
+          </div>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          {results.length} result{results.length === 1 ? '' : 's'} ·
-          sorted {sortDirection === 'asc' ? 'ascending' : 'descending'} — click a
-          column header to change sorting.
+          {isSearching
+            ? `Showing top ${QUOTE_LIMIT} live matches for “${query.trim()}”`
+            : `Showing ${POPULAR_SYMBOLS.length} popular symbols`}{' '}
+          · {sorted.length} loaded ·
+          sorted {sortDirection === 'asc' ? 'ascending' : 'descending'}
         </p>
       </Card>
 
-      {results.length === 0 ? (
+      {error ? (
+        <ErrorState
+          title="Could not load live market data"
+          description={describeError(error)}
+          action={
+            <Button type="button" variant="outline" onClick={handleRefresh}>
+              <RefreshCw aria-hidden="true" />
+              Try again
+            </Button>
+          }
+        />
+      ) : loading && sorted.length === 0 ? (
+        <LoadingState variant="rows" label="Loading live quotes…" />
+      ) : sorted.length === 0 ? (
         <EmptyState
           icon={ChartLine}
           title="No stocks match your search"
-          description="Try a different symbol, company name, or sector. The demo dataset contains a limited set of symbols."
+          description="Try a different ticker or company name. Market data covers US-listed equities and ETFs."
         />
       ) : (
         <Card className="overflow-hidden">
           <StockTable
-            stocks={results}
+            stocks={sorted}
             sortKey={sortKey}
             sortDirection={sortDirection}
             onSortChange={handleSortChange}

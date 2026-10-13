@@ -1,28 +1,31 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, Briefcase, Building, Newspaper } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { DemoBadge } from '@/components/common/DemoBadge'
+import { LiveBadge } from '@/components/common/LiveBadge'
 import { StockChart } from '@/components/common/StockChart'
 import { WatchlistButton } from '@/components/common/WatchlistButton'
 import { NewsCard } from '@/components/common/NewsCard'
 import { NewsDetailDialog } from '@/components/common/NewsDetailDialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
+import { LoadingState } from '@/components/common/LoadingState'
 import { PriceChange } from '@/components/common/PriceChange'
 import { SymbolBadge } from '@/components/common/StockRow'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { buttonVariants } from '@/components/ui/button-variants'
-import { generateHistory } from '@/mocks/history'
-import { getNewsForSymbol, getStockBySymbol } from '@/lib/stocks'
+import { getNewsForSymbol } from '@/lib/stocks'
+import { isApiError } from '@/lib/api'
+import { toStockView, UNAVAILABLE } from '@/lib/liveStock'
 import {
   formatCompact,
   formatCurrency,
   formatMarketCap,
-  formatPercent,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useHistory, useProfile, useQuote } from '@/hooks/useMarketData'
 import type { ChartRange, NewsArticle } from '@/types'
 
 function Stat({
@@ -47,60 +50,110 @@ function Stat({
   )
 }
 
+function BackLink() {
+  return (
+    <Link
+      to="/stocks"
+      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+    >
+      <ArrowLeft className="size-4" aria-hidden="true" />
+      Back to Explore Stocks
+    </Link>
+  )
+}
+
 export function StockDetailsPage() {
   const { symbol = '' } = useParams()
-  const stock = getStockBySymbol(symbol)
+  const normalized = symbol.trim().toUpperCase()
   const [range, setRange] = useState<ChartRange>('3M')
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(
     null,
   )
 
-  const chartData = useMemo(
-    () =>
-      stock ? generateHistory(stock.symbol, range, stock.price) : [],
-    [stock, range],
-  )
+  const quoteState = useQuote(normalized || undefined)
+  const profileState = useProfile(normalized || undefined)
+  const historyState = useHistory(normalized || undefined, range)
 
-  if (!stock) {
+  const handleRetry = () => {
+    quoteState.reload()
+    profileState.reload()
+    historyState.reload()
+  }
+
+  if (quoteState.loading && !quoteState.data) {
     return (
       <div className="space-y-6">
-        <Link
-          to="/stocks"
-          className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-        >
-          <ArrowLeft className="size-4" aria-hidden="true" />
-          Back to Explore Stocks
-        </Link>
+        <BackLink />
+        <LoadingState label={`Loading live data for ${normalized}…`} />
+      </div>
+    )
+  }
+
+  if (quoteState.error || !quoteState.data) {
+    const notFound =
+      isApiError(quoteState.error) && quoteState.error.code === 'not_found'
+    return (
+      <div className="space-y-6">
+        <BackLink />
         <ErrorState
-          title={`No demo data for “${symbol.toUpperCase()}”`}
-          description="This symbol is not part of the mock dataset. Try searching from the Explore Stocks page."
+          title={notFound ? `No data for “${normalized}”` : 'Could not load this symbol'}
+          description={
+            notFound
+              ? 'Market data covers US-listed equities and ETFs. Try searching from the Explore Stocks page.'
+              : isApiError(quoteState.error)
+                ? quoteState.error.message
+                : 'The market data service is unavailable right now.'
+          }
+          action={
+            notFound ? undefined : (
+              <Button type="button" variant="outline" onClick={handleRetry}>
+                Try again
+              </Button>
+            )
+          }
         />
       </div>
     )
   }
 
+  const quote = quoteState.data
+  const profile = profileState.data
+  const stock = toStockView(quote, profile)
+  const chartData = historyState.data?.points ?? []
   const relatedNews = getNewsForSymbol(stock.symbol)
+
   const rangeChange =
-    chartData.length > 0
+    chartData.length > 1
       ? chartData[chartData.length - 1].value - chartData[0].value
       : 0
   const rangeChangePercent =
-    chartData.length > 0 ? (rangeChange / chartData[0].value) * 100 : 0
+    chartData.length > 1 && chartData[0].value !== 0
+      ? (rangeChange / chartData[0].value) * 100
+      : 0
+
+  const currency = quote.currency ?? profile?.currency ?? 'USD'
+  const formatMoney = (value: number | null) =>
+    value != null ? formatCurrency(value) : UNAVAILABLE
 
   return (
     <div className="space-y-6">
-      <Link
-        to="/stocks"
-        className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-      >
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        Back to Explore Stocks
-      </Link>
+      <BackLink />
 
       <PageHeader
         title={stock.name}
-        description={stock.description}
-        badge={<DemoBadge label="Illustrative data" />}
+        description={
+          profile?.description ||
+          `Live market data for ${stock.symbol}.`
+        }
+        badge={
+          quoteState.meta ? (
+            <LiveBadge
+              status={quoteState.meta.dataStatus}
+              cached={quoteState.meta.cached}
+              stale={quoteState.meta.stale}
+            />
+          ) : null
+        }
         actions={
           <>
             <WatchlistButton symbol={stock.symbol} showLabel />
@@ -126,16 +179,20 @@ export function StockDetailsPage() {
               <h2 className="text-lg font-semibold text-foreground">
                 {stock.symbol}
               </h2>
-              <Badge variant="outline">{stock.sector}</Badge>
-              <Badge variant="secondary" className="hidden sm:inline-flex">
-                {stock.industry}
-              </Badge>
+              {profile?.sector ? (
+                <Badge variant="outline">{profile.sector}</Badge>
+              ) : null}
+              {quote.exchange ? (
+                <Badge variant="secondary" className="hidden sm:inline-flex">
+                  {quote.exchange}
+                </Badge>
+              ) : null}
             </div>
             <p className="text-sm text-muted-foreground">{stock.name}</p>
           </div>
           <div className="ml-auto text-right">
             <p className="text-2xl font-semibold tabular-nums text-foreground">
-              {formatCurrency(stock.price)}
+              {formatCurrency(quote.price)}
             </p>
             <PriceChange
               change={stock.change}
@@ -144,7 +201,7 @@ export function StockDetailsPage() {
               className="justify-end"
             />
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Prev close {formatCurrency(stock.previousClose)}
+              Prev close {formatMoney(quote.previousClose)} · {currency}
             </p>
           </div>
         </div>
@@ -153,9 +210,9 @@ export function StockDetailsPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Price history (demo)</CardTitle>
+            <CardTitle>Price history</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Deterministic mock series · {range} range ·{' '}
+              {historyState.data?.interval ?? 'live'} interval · {range} range ·{' '}
               <PriceChange
                 change={rangeChange}
                 changePercent={rangeChangePercent}
@@ -165,14 +222,36 @@ export function StockDetailsPage() {
             </p>
           </CardHeader>
           <CardContent>
-            <StockChart
-              data={chartData}
-              gradientId={`details-chart-${stock.symbol}`}
-              positive={stock.changePercent >= 0}
-              activeRange={range}
-              onRangeChange={setRange}
-              height={320}
-            />
+            {historyState.loading && chartData.length === 0 ? (
+              <LoadingState label="Loading price history…" />
+            ) : historyState.error && chartData.length === 0 ? (
+              <ErrorState
+                title="Price history unavailable"
+                description={
+                  isApiError(historyState.error)
+                    ? historyState.error.message
+                    : 'Could not load price history for this range.'
+                }
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={historyState.reload}
+                  >
+                    Try again
+                  </Button>
+                }
+              />
+            ) : (
+              <StockChart
+                data={chartData}
+                gradientId={`details-chart-${stock.symbol}`}
+                positive={stock.changePercent >= 0}
+                activeRange={range}
+                onRangeChange={setRange}
+                height={320}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -181,27 +260,44 @@ export function StockDetailsPage() {
             <CardTitle>Key statistics</CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 pt-3">
-            <Stat label="Market cap" value={formatMarketCap(stock.marketCap)} />
-            <Stat label="Sector" value={stock.sector} />
             <Stat
-              label="P/E ratio"
-              value={stock.peRatio > 0 ? stock.peRatio.toFixed(1) : 'N/A'}
-              hint={stock.peRatio > 0 ? undefined : 'Not profitable in demo'}
-            />
-            <Stat label="EPS" value={formatCurrency(stock.eps)} />
-            <Stat
-              label="Dividend yield"
+              label="Market cap"
               value={
-                stock.dividendYield > 0
-                  ? formatPercent(stock.dividendYield, false)
-                  : 'None'
+                profile?.marketCap != null
+                  ? formatMarketCap(profile.marketCap)
+                  : UNAVAILABLE
               }
             />
-            <Stat label="Industry" value={stock.industry} />
-            <Stat label="52-week high" value={formatCurrency(stock.high52)} />
-            <Stat label="52-week low" value={formatCurrency(stock.low52)} />
-            <Stat label="Volume" value={formatCompact(stock.volume)} />
-            <Stat label="Avg volume" value={formatCompact(stock.avgVolume)} />
+            <Stat label="Sector" value={profile?.sector ?? UNAVAILABLE} />
+            <Stat
+              label="P/E ratio"
+              value={UNAVAILABLE}
+              hint="Not on free tier"
+            />
+            <Stat label="EPS" value={UNAVAILABLE} hint="Not on free tier" />
+            <Stat
+              label="Dividend yield"
+              value={UNAVAILABLE}
+              hint="Not on free tier"
+            />
+            <Stat label="Industry" value={profile?.industry ?? UNAVAILABLE} />
+            <Stat
+              label="52-week high"
+              value={formatMoney(quote.high52Week)}
+            />
+            <Stat label="52-week low" value={formatMoney(quote.low52Week)} />
+            <Stat
+              label="Volume"
+              value={quote.volume != null ? formatCompact(quote.volume) : UNAVAILABLE}
+            />
+            <Stat
+              label="Avg volume"
+              value={
+                quote.averageVolume != null
+                  ? formatCompact(quote.averageVolume)
+                  : UNAVAILABLE
+              }
+            />
           </CardContent>
         </Card>
       </div>
@@ -214,18 +310,43 @@ export function StockDetailsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 pt-3">
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            {stock.description}
-          </p>
+          {profileState.loading && !profile ? (
+            <LoadingState label="Loading company profile…" />
+          ) : (
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {profile?.description ||
+                'No company description is available for this symbol.'}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-              <Briefcase className="size-3.5" aria-hidden="true" />
-              {stock.sector}
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-              {stock.industry}
-            </span>
+            {profile?.sector ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
+                <Briefcase className="size-3.5" aria-hidden="true" />
+                {profile.sector}
+              </span>
+            ) : null}
+            {profile?.industry ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
+                {profile.industry}
+              </span>
+            ) : null}
+            {profile?.country ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
+                {profile.country}
+              </span>
+            ) : null}
+            {profile?.employees != null ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
+                {formatCompact(profile.employees)} employees
+              </span>
+            ) : null}
           </div>
+          {profile?.limited ? (
+            <p className="text-xs text-muted-foreground">
+              {profile.limitationReason ??
+                'Only a limited company profile is available on the current data plan.'}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 

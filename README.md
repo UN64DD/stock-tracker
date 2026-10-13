@@ -2,25 +2,28 @@
 
 A modern stock market dashboard with interactive charts, watchlists, price alerts, company news, and market insights.
 
-> **Status:** Phase 1 — frontend UI prototype. The entire application runs on deterministic **mock data**. There is no backend, database, authentication, live stock API, email delivery, or background job. Everything is safe to click and explore without any API keys or paid services.
+> **Status:** Phase 3 — live market data via a server-side API proxy. Stock **search, quotes, price history, and (limited) company profiles** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Market indices, news, alerts, admin, and watchlist storage remain deterministic **mock data** (there is still no database, authentication, or background job). See [Market data API (Phase 3)](#market-data-api-phase-3).
 
 ## Overview
 
-Stock Tracker is a portfolio-quality frontend application built incrementally. Phase 0 established the project foundation; Phase 1 delivers a complete, responsive dashboard UI on top of it. The architecture is feature-oriented and keeps all mock data isolated so a future backend and external API can replace it cleanly.
+Stock Tracker is a portfolio-quality application built incrementally. Phase 0 established the project foundation; Phase 1 delivered a complete, responsive dashboard UI; Phase 3 wires a real market data provider in through a server-side proxy. The architecture is feature-oriented and keeps remaining mock data isolated so it can be replaced cleanly later.
 
 ## Technology Stack
 
-| Concern         | Choice                          |
-| --------------- | ------------------------------- |
-| Frontend        | React 19 + TypeScript           |
-| Build tool      | Vite                            |
-| Styling         | Tailwind CSS v4                 |
-| UI primitives   | Hand-rolled shadcn-style components |
-| Icons           | Lucide React                    |
-| Charts          | Recharts                        |
-| Routing         | React Router                    |
-| Code quality    | ESLint                          |
-| Package manager | npm                             |
+| Concern          | Choice                          |
+| ---------------- | ------------------------------- |
+| Frontend         | React 19 + TypeScript           |
+| Build tool       | Vite                            |
+| Styling          | Tailwind CSS v4                 |
+| UI primitives    | Hand-rolled shadcn-style components |
+| Icons            | Lucide React                    |
+| Charts           | Recharts                        |
+| Routing          | React Router                    |
+| API proxy server | Node + Express (TypeScript)     |
+| Market data      | Twelve Data (free Basic tier)   |
+| Server tests     | Vitest + Supertest              |
+| Code quality     | ESLint                          |
+| Package manager  | npm                             |
 
 ## Prerequisites
 
@@ -34,21 +37,28 @@ Stock Tracker is a portfolio-quality frontend application built incrementally. P
 git clone https://github.com/UN64DD/stock-tracker.git
 cd stock-tracker
 npm install
+npm --prefix server install
 ```
 
-Optionally, copy the environment template (not required for Phase 1, which is entirely mock-driven):
+Then configure the API server (see [Market data API (Phase 3)](#market-data-api-phase-3)):
 
 ```bash
-cp .env.example .env
+cp server/.env.example server/.env
+# edit server/.env and set STOCK_API_KEY to your Twelve Data key
 ```
 
 ## Local Development
 
+Run the frontend and the API proxy together:
+
 ```bash
-npm run dev
+npm run dev:all
 ```
 
-The dev server starts on the URL printed by Vite (default `http://localhost:5173`).
+The Vite dev server starts on the URL it prints (default `http://localhost:5173`)
+and proxies same-origin `/api/*` requests to the API server on
+`http://localhost:3001`. You can also run them separately with `npm run dev` and
+`npm run dev:server`.
 
 ## Build
 
@@ -64,10 +74,96 @@ npm run preview
 
 ## Other Scripts
 
-| Command             | Description                       |
-| ------------------- | --------------------------------- |
-| `npm run lint`      | Run ESLint                        |
-| `npm run typecheck` | Type-check without emitting files |
+| Command                    | Description                                        |
+| -------------------------- | -------------------------------------------------- |
+| `npm run dev:all`          | Run the web app and API proxy together             |
+| `npm run dev:server`       | Run only the API proxy (`server/`, port 3001)      |
+| `npm run lint`             | Run ESLint                                         |
+| `npm run typecheck`        | Type-check the frontend without emitting files     |
+| `npm run typecheck:server` | Type-check the API server                          |
+| `npm run test:server`      | Run the API server test suite (Vitest + Supertest) |
+
+## Market data API (Phase 3)
+
+### Provider and why Twelve Data
+
+The app uses the **Twelve Data** free Basic plan. Compared with alternatives
+considered at the time:
+
+- **Finnhub** free tier has no historical candles (`/stock/candle` is premium),
+  which the price-history chart requires.
+- **Alpha Vantage** free tier is limited to ~25 requests/day.
+- **Twelve Data** offers **800 credits/day and 8 requests/minute**, real-time US
+  equities/ETFs, `symbol_search` (1 credit), `quote` (1 credit), and
+  `time_series` (1 credit) for intraday and daily candles.
+
+Its one free-tier gap is the **company profile** endpoint (`/profile` requires a
+paid Grow plan or higher), so the UI degrades gracefully: it falls back to quote
+metadata and shows a notice instead of failing. Fundamentals such as P/E, EPS,
+and dividend yield are therefore shown as `—`.
+
+### Architecture: the key never reaches the browser
+
+The provider API key is read **only** by the Express server (`server/`) and sent
+to Twelve Data in the `Authorization` header. The React app never imports the key;
+it calls same-origin `/api/*` routes which Vite proxies to the server in dev. A
+`VITE_STOCK_API_KEY`-style variable is intentionally *not* used, because anything
+prefixed with `VITE_` is embedded in the client bundle.
+
+```
+Browser ──/api/*──▶ Vite dev proxy ──▶ Express (holds STOCK_API_KEY) ──▶ Twelve Data
+```
+
+### Configuration (`server/.env`)
+
+| Variable                       | Default                 | Purpose                                   |
+| ------------------------------ | ----------------------- | ----------------------------------------- |
+| `STOCK_API_KEY`                | — (required)            | Twelve Data API key                       |
+| `STOCK_DATA_PROVIDER`          | `twelvedata`            | Provider implementation                   |
+| `PORT`                         | `3001`                  | API server port                           |
+| `PROVIDER_CREDITS_PER_MINUTE`  | `8`                     | Server-side upstream throttle             |
+| `PROVIDER_CREDITS_PER_DAY`     | `800`                   | Server-side upstream daily budget         |
+| `REQUEST_TIMEOUT_MS`           | `8000`                  | Upstream request timeout                  |
+| `CORS_ORIGIN`                  | `http://localhost:5173` | Allowed browser origin                    |
+| `CACHE_TTL_*_SECONDS`          | see file                | Per-data-type response cache TTL          |
+
+### API endpoints
+
+All `/api/stocks/*` responses use an envelope:
+`{ data, meta: { provider, cached, stale, fetchedAt, dataStatus, dataStatusNote } }`.
+Errors use `{ error: { code, message, details? } }`.
+
+| Method & path                          | Description                                      |
+| -------------------------------------- | ------------------------------------------------ |
+| `GET /api/health`                      | Liveness + provider configuration/status         |
+| `GET /api/stocks/search?q=&limit=`     | Symbol/company search (max 20)                    |
+| `GET /api/stocks/:symbol/quote`        | Latest quote for one symbol                       |
+| `GET /api/stocks/quotes?symbols=A,B,C` | Batch quotes (max 8 symbols)                      |
+| `GET /api/stocks/:symbol/history?range=` | Candles for `1D`/`1W`/`1M`/`3M`/`1Y` (cached)   |
+| `GET /api/stocks/:symbol/profile`      | Company profile; degraded when plan-restricted    |
+
+The server caches responses (quotes 60s, history/search 5m, profile 24h) and
+serves stale cached data when the provider is temporarily unavailable. Provider
+error text is never echoed to clients, so credentials cannot leak in error
+bodies.
+
+### Free-tier behavior you will notice
+
+- The 8 requests/minute limit is tight. **Explore** loads live quotes for up to 6
+  symbols per query and **global search** up to 5; results are cached and
+  debounced. Occasional `429` responses are surfaced as a friendly retry message.
+- Company fundamentals are hidden on the free plan (see above).
+
+### Server tests
+
+```bash
+npm run test:server
+```
+
+Tests use an in-memory fake provider (no network, no API key) and cover search,
+quotes, history, profile degradation, validation errors, and provider failure
+mapping (auth → 502, rate limit → 429, timeout → 504), including asserting that
+secrets never appear in responses.
 
 ## Features (Phase 1)
 
@@ -82,9 +178,9 @@ npm run preview
 
 | Route             | Page            | Highlights |
 | ----------------- | --------------- | ---------- |
-| `/`               | Dashboard       | Market summary cards (S&P 500, NASDAQ, Dow Jones, Russell 2000), watchlist preview, interactive main market chart, top gainers/losers, latest news. |
-| `/stocks`         | Explore Stocks  | Search, sector filter, sortable table, empty state. |
-| `/stocks/:symbol` | Stock Details   | Price, change, interactive chart with range selector, key statistics, company overview, related news, watchlist toggle. |
+| `/`               | Dashboard       | Market summary cards (mock), **live watchlist quote preview**, interactive mock market chart, mock top gainers/losers, latest mock news. |
+| `/stocks`         | Explore Stocks  | **Live symbol search** with debounced queries, sortable table, popular-symbol fallback, loading/error/empty states. |
+| `/stocks/:symbol` | Stock Details   | **Live price, change, history chart with range selector**, live statistics, company overview (degraded on free tier), mock related news, watchlist toggle. |
 | `/watchlist`      | Watchlist       | Search within saved symbols, remove with confirmation, price changes. |
 | `/alerts`         | Price Alerts    | Create alerts (validated), enable/disable, delete with confirmation. |
 | `/news`           | Market News     | Category and sentiment filters, search, article detail dialog. |
@@ -94,9 +190,10 @@ npm run preview
 
 ### Interactive behaviors
 
-- Working global and page-level stock search.
+- **Live global and page-level stock search** backed by the provider (debounced).
 - Working filters and multi-column sorting.
-- Working chart time-range selection (**1D / 1W / 1M / 3M / 1Y**) that regenerates the chart data.
+- Working chart time-range selection (**1D / 1W / 1M / 3M / 1Y**) that refetches live candles.
+- Live watchlist quote preview on the dashboard.
 - Watchlist add/remove with duplicate prevention.
 - Alert create/toggle/delete with field validation.
 - Toast notifications, empty states, loading states, error states.
@@ -105,7 +202,9 @@ npm run preview
 
 ## Mock data
 
-All data lives in `src/mocks/` and is deterministic — the same values render on every reload (no `Math.random()` at render time):
+The following parts of the app are still driven by deterministic mock data (the
+same values render on every reload). Live prices/search/history come from the API
+proxy described above; everything else here is illustrative.
 
 - `stocks.ts` — ~30 mock stocks with fundamentals.
 - `indices.ts` — S&P 500, NASDAQ, Dow Jones, Russell 2000.
@@ -132,45 +231,63 @@ The following demo state is persisted in your browser via `localStorage`. This i
 
 Use **Settings → Demo data → Reset demo data** to clear everything and reload defaults.
 
-## Limitations of the demo
+## Limitations
 
 - No authentication or real user accounts.
-- No database or server persistence.
-- No live or real market data (values are fictional and may not be realistic).
-- No API integrations or background jobs.
-- Price alerts are never monitored and no emails are sent.
+- No database or server persistence (watchlist/alerts remain browser `localStorage`).
+- Only search, quotes, price history, and (limited) profiles are live. Market
+  indices, top movers, news, alerts, and admin data are still mock.
+- Company fundamentals (P/E, EPS, dividend yield) require a paid Twelve Data plan
+  and are shown as `—` on the free tier.
+- Free-tier rate limits (8/min, 800/day) can produce occasional `429` responses.
+- No background jobs; price alerts are never monitored and no emails are sent.
 - News headlines, sources, and links are fictional; external article links are disabled placeholders.
 - The admin dashboard is an openly accessible visual prototype with **no authorization**.
 - Passwords are never requested or stored.
 
 ## Testing the interface
 
-1. `npm install && npm run dev`.
-2. Visit `/` — verify market summary cards, chart range buttons change the chart, and watchlist preview rows link to details.
-3. Go to `/stocks`, type `NVDA` in the search box, and try sorting by clicking table headers. Search for `zzzz` to see the empty state.
-4. Open a stock (e.g. `/stocks/AAPL`), toggle **Add to watchlist**, then visit `/watchlist` and confirm it appears.
-5. On `/watchlist`, remove a symbol and confirm the dialog. Refresh the page — changes persist.
-6. On `/alerts`, create an alert (try a negative target to see validation), toggle it, and delete it. Refresh — changes persist.
-7. On `/news`, filter by category/sentiment and open an article detail dialog.
-8. On `/settings`, switch the theme and change notification toggles, then refresh.
-9. On `/admin`, add/remove stock metadata and create/edit a news entry.
-10. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
+1. `npm install && npm --prefix server install`, set `STOCK_API_KEY` in
+   `server/.env`, then run `npm run dev:all`.
+2. Visit `/api/health` on the API server (or `http://localhost:5173/api/health`)
+   and confirm `provider.configured` is `true`.
+3. Visit `/` — verify market summary cards, chart range buttons change the mock
+   chart, and the watchlist preview shows **live** quotes.
+4. Go to `/stocks`, type `NVDA` in the search box, and try sorting by clicking
+   table headers. Search for a nonsense string to see the empty state.
+5. Open a live stock (e.g. `/stocks/AAPL`); switch chart ranges to refetch candles, then toggle **Add to watchlist** and visit `/watchlist` to confirm it appears.
+6. On `/watchlist`, remove a symbol and confirm the dialog. Refresh the page — changes persist.
+7. On `/alerts`, create an alert (try a negative target to see validation), toggle it, and delete it. Refresh — changes persist.
+8. On `/news`, filter by category/sentiment and open an article detail dialog.
+9. On `/settings`, switch the theme and change notification toggles, then refresh.
+10. On `/admin`, add/remove stock metadata and create/edit a news entry.
+11. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
 
 ## Project Structure
 
 ```text
 stock-tracker/
+├── server/                 # Express market-data proxy (holds STOCK_API_KEY)
+│   ├── src/
+│   │   ├── lib/            # cache, budget, rate limit, validation, errors
+│   │   ├── providers/      # TwelveDataProvider + provider interface
+│   │   ├── routes/         # /api/health, /api/stocks/*
+│   │   ├── services/       # MarketDataService (caching, degradation)
+│   │   ├── app.ts          # Express app factory (test-injectable)
+│   │   └── index.ts        # Server entry point
+│   ├── .env.example
+│   └── package.json
 ├── public/                 # Static assets
 ├── src/
 │   ├── components/
-│   │   ├── common/         # Reusable domain components (StatCard, StockChart, …)
+│   │   ├── common/         # Reusable domain components (StatCard, StockChart, LiveBadge, …)
 │   │   ├── layout/         # Sidebar, Header, PageHeader
 │   │   └── ui/             # shadcn-style primitives
 │   ├── config/             # Navigation config
 │   ├── contexts/           # Watchlist, Alerts, Toast, Theme providers
-│   ├── hooks/              # useLocalStorage
+│   ├── hooks/              # useLocalStorage, useAsync, useMarketData, useDebouncedValue
 │   ├── layouts/            # DashboardLayout (route layout)
-│   ├── lib/                # cn, formatting, storage, stock selectors
+│   ├── lib/                # api client, cn, formatting, storage, stock selectors, liveStock
 │   ├── mocks/              # Deterministic mock data
 │   ├── pages/              # Route pages
 │   ├── types/              # Shared TypeScript types
@@ -189,9 +306,9 @@ The `@/*` import alias points at `src/`.
 ## Planned Development Phases
 
 1. Project foundation and UI ✅
-2. Authentication and database
-3. Stock search and stock data API
-4. Interactive charts and company fundamentals
+2. Authentication and database *(not implemented — skipped; the app remains a single-user localStorage prototype)*
+3. Stock search and stock data API ✅ *(Twelve Data via server-side Express proxy)*
+4. Interactive charts and company fundamentals *(charts are live; full fundamentals need a paid provider plan)*
 5. Persistent watchlists
 6. News and market sentiment
 7. Price alerts

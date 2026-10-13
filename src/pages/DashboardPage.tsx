@@ -15,7 +15,10 @@ import { StockRow } from '@/components/common/StockRow'
 import { NewsCard } from '@/components/common/NewsCard'
 import { NewsDetailDialog } from '@/components/common/NewsDetailDialog'
 import { EmptyState } from '@/components/common/EmptyState'
+import { LoadingState } from '@/components/common/LoadingState'
 import { PriceChange } from '@/components/common/PriceChange'
+import { useQuotes } from '@/hooks/useMarketData'
+import { toStockView } from '@/lib/liveStock'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { marketIndices } from '@/mocks/indices'
@@ -69,7 +72,9 @@ export function DashboardPage() {
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(
     null,
   )
-  const { stocks: watchlistStocks, symbols } = useWatchlist()
+  const { symbols } = useWatchlist()
+  const previewSymbols = useMemo(() => symbols.slice(0, 5), [symbols])
+  const watchlistQuotes = useQuotes(previewSymbols)
 
   const sp500 = marketIndices[0]
   const chartData = useMemo(
@@ -80,7 +85,14 @@ export function DashboardPage() {
   const gainers = getTopGainers(5)
   const losers = getTopLosers(5)
   const latestNews = sortNewsByDate(newsArticles).slice(0, 4)
-  const previewWatchlist = watchlistStocks.slice(0, 5)
+
+  const previewWatchlist = useMemo(() => {
+    const quotes = watchlistQuotes.data?.quotes ?? {}
+    return previewSymbols
+      .map((symbol) => quotes[symbol])
+      .filter((quote): quote is NonNullable<typeof quote> => Boolean(quote))
+      .map((quote) => toStockView(quote))
+  }, [previewSymbols, watchlistQuotes.data])
 
   const rangeChange =
     chartData[chartData.length - 1].value - chartData[0].value
@@ -90,8 +102,8 @@ export function DashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title="Market Overview"
-        description="A snapshot of major indices, your watchlist, and illustrative market activity."
-        badge={<DemoBadge label="Mock market data" />}
+        description="Major indices and news are mock data; your watchlist shows live quotes."
+        badge={<DemoBadge label="Indices/news mock · watchlist live" />}
         actions={
           <Link to="/stocks" className={cn(buttonVariants({ variant: 'outline' }))}>
             Explore stocks
@@ -157,7 +169,15 @@ export function DashboardPage() {
             </Link>
           </CardHeader>
           <CardContent className="space-y-1 pt-3">
-            {previewWatchlist.length === 0 ? (
+            {watchlistQuotes.loading && previewWatchlist.length === 0 ? (
+              <LoadingState variant="rows" label="Loading watchlist quotes…" />
+            ) : watchlistQuotes.error && previewWatchlist.length === 0 ? (
+              <EmptyState
+                title="Live quotes unavailable"
+                description="The market data service could not be reached. Start it with “npm run dev:server”."
+                className="py-10"
+              />
+            ) : previewWatchlist.length === 0 ? (
               <EmptyState
                 title="No saved stocks"
                 description="Add symbols from a stock details page to see them here."
@@ -169,7 +189,8 @@ export function DashboardPage() {
               ))
             )}
             <p className="pt-2 text-xs text-muted-foreground">
-              Tracking {symbols.length} of {watchlistStocks.length} saved symbols.
+              Live quotes for {previewWatchlist.length} of {symbols.length} saved
+              symbol{symbols.length === 1 ? '' : 's'}.
             </p>
           </CardContent>
         </Card>
@@ -234,8 +255,8 @@ export function DashboardPage() {
       />
 
       <p className="text-xs text-muted-foreground">
-        Note: All prices shown are deterministic mock values generated for this
-        prototype and are not live quotes.
+        Note: Index values, top movers, and news are illustrative mock data.
+        Watchlist quotes are fetched live from the market data provider.
       </p>
     </div>
   )
