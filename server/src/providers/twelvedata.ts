@@ -13,6 +13,7 @@ import type {
   DataStatus,
   HistoricalPoint,
   HistoricalSeries,
+  ReportedFundamentals,
   StockProvider,
   StockQuote,
   StockSearchResult,
@@ -28,11 +29,15 @@ interface RangeConfig {
 }
 
 const RANGE_CONFIG: Record<ChartRange, RangeConfig> = {
+  // Twelve Data supports 1min/5min/15min/30min/45min/1h/2h/4h/8h/1day/1week/1month.
+  // Intraday windows use minute/hour bars; longer windows use daily/weekly bars.
   '1D': { interval: '5min', outputsize: 78, intraday: true, dataStatus: 'real-time' },
-  '1W': { interval: '1h', outputsize: 40, intraday: true, dataStatus: 'real-time' },
+  '1W': { interval: '30min', outputsize: 65, intraday: true, dataStatus: 'real-time' },
   '1M': { interval: '1day', outputsize: 30, intraday: false, dataStatus: 'end-of-day' },
   '3M': { interval: '1day', outputsize: 92, intraday: false, dataStatus: 'end-of-day' },
-  '1Y': { interval: '1week', outputsize: 52, intraday: false, dataStatus: 'end-of-day' },
+  '6M': { interval: '1day', outputsize: 183, intraday: false, dataStatus: 'end-of-day' },
+  '1Y': { interval: '1day', outputsize: 366, intraday: false, dataStatus: 'end-of-day' },
+  '5Y': { interval: '1week', outputsize: 261, intraday: false, dataStatus: 'end-of-day' },
 }
 
 type RawRecord = Record<string, unknown>
@@ -230,6 +235,13 @@ export class TwelveDataProvider implements StockProvider {
 
     if (points.length === 0) return null
 
+    // Guard against out-of-order or duplicate observations: chart consumers
+    // rely on strictly increasing timestamps.
+    points.sort((a, b) => a.timestamp - b.timestamp)
+    const ordered = points.filter(
+      (point, index) => index === 0 || point.timestamp > points[index - 1].timestamp,
+    )
+
     return {
       symbol,
       range,
@@ -237,7 +249,7 @@ export class TwelveDataProvider implements StockProvider {
       currency: toText(meta.currency),
       exchange: toText(meta.exchange),
       dataStatus: config.dataStatus,
-      points,
+      points: ordered,
     }
   }
 
@@ -250,8 +262,13 @@ export class TwelveDataProvider implements StockProvider {
     const isoish = `${datePart}T${timePart ?? '00:00:00'}Z`
     const timestamp = Date.parse(isoish)
 
+    // Drop observations the provider labelled with an unparseable timestamp
+    // instead of silently substituting the current time, which would distort
+    // the chart and any period-performance calculation.
+    if (!datePart || !Number.isFinite(timestamp)) return null
+
     return {
-      timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+      timestamp,
       label: intraday ? (timePart ?? datePart).slice(0, 5) : formatDayLabel(datePart),
       value,
     }
@@ -279,6 +296,53 @@ export class TwelveDataProvider implements StockProvider {
       limitationReason: null,
     }
   }
+
+  /**
+   * Reported fundamentals from the `/statistics` endpoint (Twelve Data Pro
+   * plan and above). On plans that do not include it the transport/response
+   * layer throws a plan-restricted error, which callers translate into a
+   * clearly-labelled "unavailable" state rather than fabricating values.
+   */
+  async getStatistics(symbol: string, signal?: AbortSignal): Promise<ReportedFundamentals | null> {
+    const data = await this.request<RawRecord>('statistics', { symbol }, signal)
+    this.throwIfProviderError(data)
+    if (!isRecord(data)) return null
+
+    const meta = isRecord(data.meta) ? data.meta : {}
+    const statistics = isRecord(data.statistics) ? data.statistics : {}
+    const valuations = isRecord(statistics.valuations_metrics)
+      ? statistics.valuations_metrics
+      : {}
+    const financials = isRecord(statistics.financials) ? statistics.financials : {}
+    const income = isRecord(financials.income_statement)
+      ? financials.income_statement
+      : {}
+    const dividends = isRecord(statistics.dividends_and_splits)
+      ? statistics.dividends_and_splits
+      : {}
+
+    const resolvedSymbol = toText(meta.symbol) ?? toText(data.symbol) ?? symbol
+
+    return {
+      symbol: resolvedSymbol.toUpperCase(),
+      currency: toText(meta.currency),
+      exchange: toText(meta.exchange),
+      marketCap: toNumber(valuations.market_capitalization),
+      trailingPe: toNumber(valuations.trailing_pe),
+      eps: toNumber(income.diluted_eps_ttm),
+      // Twelve Data reports annual dividend yield as a fraction (0.0057 = 0.57%).
+      dividendYieldPercent: toFractionAsPercent(dividends.trailing_annual_dividend_yield),
+      revenue: toNumber(income.revenue_ttm),
+      revenuePeriod: toNumber(income.revenue_ttm) === null ? null : 'TTM',
+    }
+  }
+}
+
+/** Converts a provider ratio that may be a fraction (0.0057) into a percentage. */
+function toFractionAsPercent(value: unknown): number | null {
+  const parsed = toNumber(value)
+  if (parsed === null) return null
+  return parsed <= 1 ? parsed * 100 : parsed
 }
 
 function formatDayLabel(datePart: string): string {

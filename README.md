@@ -2,11 +2,11 @@
 
 A modern stock market dashboard with interactive charts, watchlists, price alerts, company news, and market insights.
 
-> **Status:** Phase 3 — live market data via a server-side API proxy. Stock **search, quotes, price history, and (limited) company profiles** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Market indices, news, alerts, admin, and watchlist storage remain deterministic **mock data** (there is still no database, authentication, or background job). See [Market data API (Phase 3)](#market-data-api-phase-3).
+> **Status:** Phase 4 — interactive charts and company financials. Stock **search, quotes, price history (1D–5Y), company profiles, and a financial overview** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Reported fundamentals (P/E, EPS, dividend yield, revenue) require a paid plan and degrade to a clear unavailable state on the free tier. Market indices, news, alerts, admin, and watchlist storage remain deterministic **mock data** (there is still no database, authentication, or background job). See [Market data API (Phase 3–4)](#market-data-api-phase-34).
 
 ## Overview
 
-Stock Tracker is a portfolio-quality application built incrementally. Phase 0 established the project foundation; Phase 1 delivered a complete, responsive dashboard UI; Phase 3 wires a real market data provider in through a server-side proxy. The architecture is feature-oriented and keeps remaining mock data isolated so it can be replaced cleanly later.
+Stock Tracker is a portfolio-quality application built incrementally. Phase 0 established the project foundation; Phase 1 delivered a complete, responsive dashboard UI; Phase 3 wired a real market data provider in through a server-side proxy; Phase 4 adds an interactive price chart (1D–5Y, line/area, period statistics) and a company financial overview. The architecture is feature-oriented and keeps remaining mock data isolated so it can be replaced cleanly later.
 
 ## Technology Stack
 
@@ -95,9 +95,12 @@ from `server/.env` on the server host.
 | `npm run lint`             | Run ESLint                                         |
 | `npm run typecheck`        | Type-check the frontend without emitting files     |
 | `npm run typecheck:server` | Type-check the API server                          |
+| `npm run test:web`         | Run the frontend unit tests (Vitest)               |
+| `npm run test:web:watch`   | Run the frontend unit tests in watch mode          |
 | `npm run test:server`      | Run the API server test suite (Vitest + Supertest) |
+| `npm run test:all`         | Run the frontend and server test suites together   |
 
-## Market data API (Phase 3)
+## Market data API (Phase 3–4)
 
 ### Provider and why Twelve Data
 
@@ -111,10 +114,14 @@ considered at the time:
   equities/ETFs, `symbol_search` (1 credit), `quote` (1 credit), and
   `time_series` (1 credit) for intraday and daily candles.
 
-Its one free-tier gap is the **company profile** endpoint (`/profile` requires a
-paid Grow plan or higher), so the UI degrades gracefully: it falls back to quote
-metadata and shows a notice instead of failing. Fundamentals such as P/E, EPS,
-and dividend yield are therefore shown as `—`.
+Its free-tier gaps are the **company profile** endpoint (`/profile`, Grow plan
+or higher) and the **statistics** endpoint (`/statistics`, Pro plan or higher),
+which is the source of reported fundamentals. The UI degrades gracefully: the
+profile falls back to quote metadata, and the financial overview falls back to
+live quote metrics while reported figures (market cap, P/E, EPS, dividend yield,
+revenue) are shown as `—` with a notice explaining the plan requirement. The
+server remembers a plan-restricted response for six hours so it does not retry a
+paid endpoint on every request.
 
 ### Architecture: the key never reaches the browser
 
@@ -139,7 +146,7 @@ Browser ──/api/*──▶ Vite dev proxy ──▶ Express (holds STOCK_API_
 | `PROVIDER_CREDITS_PER_DAY`     | `800`                   | Server-side upstream daily budget         |
 | `REQUEST_TIMEOUT_MS`           | `8000`                  | Upstream request timeout                  |
 | `CORS_ORIGIN`                  | `http://localhost:5173` | Allowed browser origin                    |
-| `CACHE_TTL_*_SECONDS`          | see file                | Per-data-type response cache TTL          |
+| `CACHE_TTL_*_SECONDS`          | see file                | Per-data-type response cache TTL (`CACHE_TTL_FINANCIALS_SECONDS` caches the financial overview) |
 
 ### API endpoints
 
@@ -155,20 +162,75 @@ of `hit`, `stale`, or `miss`.
 | `GET /api/stocks/search?q=&limit=`     | Symbol/company search (max 20)                    |
 | `GET /api/stocks/:symbol/quote`        | Latest quote for one symbol                       |
 | `GET /api/stocks/quotes?symbols=A,B,C` | Batch quotes (max 8 symbols)                      |
-| `GET /api/stocks/:symbol/history?range=` | Candles for `1D`/`1W`/`1M`/`3M`/`1Y` (cached)   |
+| `GET /api/stocks/:symbol/history?range=` | Candles for `1D`/`1W`/`1M`/`3M`/`6M`/`1Y`/`5Y` (cached) |
 | `GET /api/stocks/:symbol/profile`      | Company profile; degraded when plan-restricted    |
+| `GET /api/stocks/:symbol/financials`   | Financial overview: live metrics + reported fundamentals; degraded when plan-restricted |
 
-The server caches responses (quotes 60s, history/search 5m, profile 24h) and
-serves stale cached data when the provider is temporarily unavailable. Provider
-error text is never echoed to clients, so credentials cannot leak in error
-bodies.
+The server caches responses (quotes 60s, history/search 5m, profile/financials
+24h) and serves stale cached data when the provider is temporarily unavailable.
+Provider error text is never echoed to clients, so credentials cannot leak in
+error bodies.
+
+#### Chart range → provider interval mapping
+
+The `range` query parameter selects a Twelve Data interval and observation
+count. All listed ranges are supported by the free tier. Intraday ranges use
+UTC-normalized minute/hour bars; longer ranges use daily/weekly closes.
+
+| Range | Interval | Observations | Data status |
+| ----- | -------- | ------------ | ----------- |
+| `1D`  | `5min`   | 78 (~1 session) | real-time |
+| `1W`  | `30min`  | 65 | real-time |
+| `1M`  | `1day`   | 30 | end-of-day |
+| `3M`  | `1day`   | 92 | end-of-day |
+| `6M`  | `1day`   | 183 | end-of-day |
+| `1Y`  | `1day`   | 366 | end-of-day |
+| `5Y`  | `1week`  | 261 | end-of-day |
+
+Unsupported values are rejected with `400 validation_error` rather than
+silently substituting a different window.
+
+#### `GET /api/stocks/:symbol/financials`
+
+Returns the stock-details financial overview, normalizing live market data with
+reported fundamentals. Response `data` shape:
+
+```ts
+{
+  symbol: string
+  name: string | null
+  currency: string | null
+  exchange: string | null
+  // Live market metrics (from /quote)
+  high52Week: number | null
+  low52Week: number | null
+  averageVolume: number | null
+  // Reported fundamentals (from /statistics; null when unavailable)
+  marketCap: number | null
+  trailingPe: number | null
+  eps: number | null
+  dividendYieldPercent: number | null   // e.g. 0.57 means 0.57%
+  revenue: number | null
+  revenuePeriod: string | null          // e.g. "TTM"
+  dataStatus: 'real-time' | 'delayed' | 'end-of-day' | 'unknown'
+  limited: boolean                      // true when reported fundamentals are withheld by the plan
+  limitationReason: string | null
+}
+```
+
+`null` always means "not available" — the UI never substitutes zero. On the free
+plan `limited` is `true` and the reported fundamentals are `null`; the live
+metrics remain populated.
 
 ### Free-tier behavior you will notice
 
 - The 8 requests/minute limit is tight. **Explore** loads live quotes for up to 6
   symbols per query and **global search** up to 5; results are cached and
   debounced. Occasional `429` responses are surfaced as a friendly retry message.
-- Company fundamentals are hidden on the free plan (see above).
+- Company fundamentals are hidden on the free plan (see above). On a stock
+  details page the chart, price, 52-week range, and average volume are live; the
+  reported fundamentals panel explains why P/E, EPS, dividend yield, market cap,
+  and revenue are `—`.
 
 ### Server scripts
 
@@ -190,9 +252,27 @@ npm run test:server
 ```
 
 Tests use an in-memory fake provider (no network, no API key) and cover search,
-quotes, history, profile degradation, validation errors, and provider failure
-mapping (auth → 502, rate limit → 429, timeout → 504), including asserting that
-secrets never appear in responses.
+quotes, every supported history range, empty historical datasets, range-switch
+caching, profile degradation, financial-overview degradation, validation errors,
+and provider failure mapping (auth → 502, rate limit → 429, timeout → 504),
+including asserting that secrets never appear in responses. Provider-level tests
+stub the global `fetch` to verify Twelve Data response normalization
+(sorting/de-duplication, dropping invalid observations, the `statistics`
+mapping, and plan-restricted 403 handling) without any network access.
+
+### Frontend tests
+
+```bash
+npm run test:web
+```
+
+Deterministic Vitest unit tests for the chart and formatting helpers:
+`normalizeHistoryPoints` (invalid/missing/out-of-order/duplicate data),
+`computePeriodStats` (open/close/high/low and percentage change, empty datasets,
+divide-by-zero), range classification, timestamp formatting, and currency-aware
+price/percentage/compact formatting. Component rendering and responsive layout
+have no automated coverage in this project and are verified manually (see
+[Testing the interface](#testing-the-interface)).
 
 ## Features (Phase 1)
 
@@ -209,7 +289,7 @@ secrets never appear in responses.
 | ----------------- | --------------- | ---------- |
 | `/`               | Dashboard       | Market summary cards (mock), **live watchlist quote preview**, interactive mock market chart, mock top gainers/losers, latest mock news. |
 | `/stocks`         | Explore Stocks  | **Live symbol search** with debounced queries, sortable table, popular-symbol fallback, loading/error/empty states. |
-| `/stocks/:symbol` | Stock Details   | **Live price, change, history chart with range selector**, live statistics, company overview (degraded on free tier), mock related news, watchlist toggle. |
+| `/stocks/:symbol` | Stock Details   | **Live price, change, interactive history chart (1D–5Y, line/area, period statistics and tooltips)**, financial overview (live vs reported, degraded on free tier), company summary, mock related news, watchlist toggle. |
 | `/watchlist`      | Watchlist       | Search within saved symbols, remove with confirmation, price changes. |
 | `/alerts`         | Price Alerts    | Create alerts (validated), enable/disable, delete with confirmation. |
 | `/news`           | Market News     | Category and sentiment filters, search, article detail dialog. |
@@ -221,7 +301,8 @@ secrets never appear in responses.
 
 - **Live global and page-level stock search** backed by the provider (debounced).
 - Working filters and multi-column sorting.
-- Working chart time-range selection (**1D / 1W / 1M / 3M / 1Y**) that refetches live candles.
+- Working chart time-range selection (**1D / 1W / 1M / 3M / 6M / 1Y / 5Y**) that refetches live candles, plus line/area display options.
+- Selected-period statistics (open, close, high, low, percentage change) computed from the returned observations and clearly separated from the daily price change.
 - Live watchlist quote preview on the dashboard.
 - Watchlist add/remove with duplicate prevention.
 - Alert create/toggle/delete with field validation.
@@ -237,7 +318,7 @@ proxy described above; everything else here is illustrative.
 
 - `stocks.ts` — ~30 mock stocks with fundamentals.
 - `indices.ts` — S&P 500, NASDAQ, Dow Jones, Russell 2000.
-- `history.ts` — a seeded (mulberry32) historical-series generator plus `DEMO_NOW`, so charts are stable and reproducible per symbol/range.
+- `history.ts` — a seeded (mulberry32) historical-series generator plus `DEMO_NOW`, so the dashboard's mock chart is stable and reproducible per symbol/range. The canonical chart range list and the live-chart math live in `src/lib/chart.ts`.
 - `news.ts` — fictional, clearly labelled news articles.
 - `alerts.ts` — example demo alerts and condition labels.
 - `admin.ts` — mock admin activity, demo profile, and notifications.
@@ -266,8 +347,13 @@ Use **Settings → Demo data → Reset demo data** to clear everything and reloa
 - No database or server persistence (watchlist/alerts remain browser `localStorage`).
 - Only search, quotes, price history, and (limited) profiles are live. Market
   indices, top movers, news, alerts, and admin data are still mock.
-- Company fundamentals (P/E, EPS, dividend yield) require a paid Twelve Data plan
-  and are shown as `—` on the free tier.
+- Reported company fundamentals (market cap, P/E, EPS, dividend yield, revenue)
+  require a paid Twelve Data plan (`/statistics` is Pro+, `/profile` is Grow+)
+  and are shown as `—` with an explanation on the free tier. The server does not
+  bypass these restrictions; it attempts the endpoint at most once every six
+  hours and falls back to live quote metrics.
+- Historical ranges are limited to `1D`–`5Y` (the provider supports no free
+  intraday depth beyond a session, and no paid-only intervals are used).
 - Free-tier rate limits (8/min, 800/day) can produce occasional `429` responses.
 - No background jobs; price alerts are never monitored and no emails are sent.
 - News headlines, sources, and links are fictional; external article links are disabled placeholders.
@@ -284,13 +370,28 @@ Use **Settings → Demo data → Reset demo data** to clear everything and reloa
    chart, and the watchlist preview shows **live** quotes.
 4. Go to `/stocks`, type `NVDA` in the search box, and try sorting by clicking
    table headers. Search for a nonsense string to see the empty state.
-5. Open a live stock (e.g. `/stocks/AAPL`); switch chart ranges to refetch candles, then toggle **Add to watchlist** and visit `/watchlist` to confirm it appears.
-6. On `/watchlist`, remove a symbol and confirm the dialog. Refresh the page — changes persist.
-7. On `/alerts`, create an alert (try a negative target to see validation), toggle it, and delete it. Refresh — changes persist.
-8. On `/news`, filter by category/sentiment and open an article detail dialog.
-9. On `/settings`, switch the theme and change notification toggles, then refresh.
-10. On `/admin`, add/remove stock metadata and create/edit a news entry.
-11. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
+5. Open a live stock (e.g. `/stocks/AAPL`). Switch between **1D**, **1W**,
+   **1M**, **3M**, **6M**, **1Y**, and **5Y** and confirm the chart refetches,
+   the period open/close/high/low and percentage change update, and the tooltip
+   shows the observation timestamp and price. Toggle **area/line**, then click
+   **Add to watchlist** and visit `/watchlist` to confirm it appears.
+6. On the same page, review the **Company summary** and **Financials** sections.
+   On the free tier, reported fundamentals show `—` with a plan notice while the
+   live 52-week range and average volume render normally.
+7. Rapidly switch between two symbols (e.g. `AAPL` then `MSFT`) and confirm that
+   a slow response for the first never overwrites the second.
+8. On `/watchlist`, remove a symbol and confirm the dialog. Refresh the page — changes persist.
+9. On `/alerts`, create an alert (try a negative target to see validation), toggle it, and delete it. Refresh — changes persist.
+10. On `/news`, filter by category/sentiment and open an article detail dialog.
+11. On `/settings`, switch the theme and change notification toggles, then refresh.
+12. On `/admin`, add/remove stock metadata and create/edit a news entry.
+13. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
+
+For automated coverage run `npm run test:all` (frontend helpers + API server).
+A real-provider smoke test is optional: with a valid `STOCK_API_KEY`, open a
+live symbol and confirm `/api/stocks/:symbol/history?range=5Y` and
+`/api/stocks/:symbol/financials` return `200`. Keep requests minimal to preserve
+the free-tier daily quota.
 
 ## Project Structure
 
@@ -316,17 +417,19 @@ stock-tracker/
 │   ├── contexts/           # Watchlist, Alerts, Toast, Theme providers
 │   ├── hooks/              # useLocalStorage, useAsync, useMarketData, useDebouncedValue
 │   ├── layouts/            # DashboardLayout (route layout)
-│   ├── lib/                # api client, cn, formatting, storage, stock selectors, liveStock
+│   ├── lib/                # api client, cn, formatting, chart math, storage, stock selectors, liveStock
 │   ├── mocks/              # Deterministic mock data
 │   ├── pages/              # Route pages
 │   ├── types/              # Shared TypeScript types
 │   ├── App.tsx             # Router + providers
 │   └── main.tsx
+├── tests/                  # Frontend Vitest unit tests (pure helpers)
 ├── components.json         # shadcn/ui configuration
 ├── eslint.config.js
 ├── index.html
 ├── package.json
 ├── tsconfig.json
+├── vitest.config.ts        # Frontend test runner configuration
 └── vite.config.ts
 ```
 
@@ -337,7 +440,7 @@ The `@/*` import alias points at `src/`.
 1. Project foundation and UI ✅
 2. Authentication and database *(not implemented — skipped; the app remains a single-user localStorage prototype)*
 3. Stock search and stock data API ✅ *(Twelve Data via server-side Express proxy)*
-4. Interactive charts and company fundamentals *(charts are live; full fundamentals need a paid provider plan)*
+4. Interactive charts and company fundamentals ✅ *(live 1D–5Y line/area charts; reported fundamentals degrade to a clear unavailable state on the free provider plan)*
 5. Persistent watchlists
 6. News and market sentiment
 7. Price alerts

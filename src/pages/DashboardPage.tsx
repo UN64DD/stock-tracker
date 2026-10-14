@@ -150,7 +150,7 @@ export function DashboardPage() {
             <StockChart
               data={chartData}
               gradientId="dashboard-chart"
-              positive={sp500.changePercent >= 0}
+              positive={rangeChange >= 0}
               activeRange={range}
               onRangeChange={setRange}
               height={320}

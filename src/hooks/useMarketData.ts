@@ -1,4 +1,5 @@
 import {
+  fetchFinancials,
   fetchHistory,
   fetchProfile,
   fetchQuote,
@@ -45,6 +46,14 @@ export function useHistory(symbol: string | undefined, range: string) {
 export function useProfile(symbol: string | undefined) {
   return useAsync(
     (signal) => fetchProfile(symbol ?? '', signal),
+    [symbol],
+    Boolean(symbol),
+  )
+}
+
+export function useFinancials(symbol: string | undefined) {
+  return useAsync(
+    (signal) => fetchFinancials(symbol ?? '', signal),
     [symbol],
     Boolean(symbol),
   )

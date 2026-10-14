@@ -7,6 +7,7 @@ export interface CacheTtlConfig {
   history: number
   search: number
   profile: number
+  financials: number
 }
 
 export interface AppConfig {
@@ -44,6 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       history: readInt(env.CACHE_TTL_HISTORY_SECONDS, 300) * 1000,
       search: readInt(env.CACHE_TTL_SEARCH_SECONDS, 300) * 1000,
       profile: readInt(env.CACHE_TTL_PROFILE_SECONDS, 86_400) * 1000,
+      financials: readInt(env.CACHE_TTL_FINANCIALS_SECONDS, 86_400) * 1000,
     },
   }
 }

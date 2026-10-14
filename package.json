@@ -11,7 +11,10 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
     "typecheck:server": "npm --prefix server run typecheck",
+    "test:web": "vitest run",
+    "test:web:watch": "vitest",
     "test:server": "npm --prefix server test",
+    "test:all": "npm run test:web && npm run test:server",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -40,6 +43,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.71.1",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
   }
 }

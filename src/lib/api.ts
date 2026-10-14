@@ -77,6 +77,27 @@ export interface CompanyProfile {
   limitationReason: string | null
 }
 
+export interface CompanyFinancials {
+  symbol: string
+  name: string | null
+  currency: string | null
+  exchange: string | null
+  /** Live market metrics. */
+  high52Week: number | null
+  low52Week: number | null
+  averageVolume: number | null
+  /** Reported fundamentals for a historical period. */
+  marketCap: number | null
+  trailingPe: number | null
+  eps: number | null
+  dividendYieldPercent: number | null
+  revenue: number | null
+  revenuePeriod: string | null
+  dataStatus: DataStatus
+  limited: boolean
+  limitationReason: string | null
+}
+
 export interface BatchQuotes {
   quotes: Record<string, Quote>
   missing: string[]
@@ -200,6 +221,16 @@ export function fetchProfile(
 ): Promise<ApiEnvelope<CompanyProfile>> {
   return apiFetch<CompanyProfile>(
     `/api/stocks/${encodeURIComponent(symbol)}/profile`,
+    signal,
+  )
+}
+
+export function fetchFinancials(
+  symbol: string,
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<CompanyFinancials>> {
+  return apiFetch<CompanyFinancials>(
+    `/api/stocks/${encodeURIComponent(symbol)}/financials`,
     signal,
   )
 }

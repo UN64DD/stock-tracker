@@ -33,7 +33,9 @@ export interface MarketIndex {
   changePercent: number
 }
 
-export type ChartRange = '1D' | '1W' | '1M' | '3M' | '1Y'
+export type ChartRange = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '5Y'
+
+export type ChartType = 'area' | 'line'
 
 export interface HistoricalPoint {
   timestamp: number

@@ -10,8 +10,10 @@ import {
 import type { CacheTtlConfig } from '../config.js'
 import type { ChartRange } from '../lib/validate.js'
 import type {
+  CompanyFinancials,
   CompanyProfile,
   HistoricalSeries,
+  ReportedFundamentals,
   StockProvider,
   StockQuote,
   StockSearchResult,
@@ -33,6 +35,9 @@ export interface ProviderInfo {
 
 const PROFILE_RESTRICTION_TTL_MS = 6 * 60 * 60 * 1000
 
+const STATISTICS_LIMITATION =
+  "Reported fundamentals (market cap, P/E, EPS, dividend yield, revenue) require Twelve Data's Pro plan or higher. Live market metrics are shown instead."
+
 function isTransient(error: unknown): boolean {
   if (error instanceof ProviderRateLimitError) return true
   if (error instanceof UpstreamTimeoutError) return true
@@ -46,6 +51,7 @@ function isTransient(error: unknown): boolean {
  */
 export class MarketDataService {
   private profileRestrictedUntil = 0
+  private statisticsRestrictedUntil = 0
 
   constructor(
     private readonly provider: StockProvider,
@@ -181,6 +187,71 @@ export class MarketDataService {
       (innerSignal) => this.fetchProfile(symbol, innerSignal),
       signal,
     )
+  }
+
+  financials(
+    symbol: string,
+    signal?: AbortSignal,
+  ): Promise<CacheResult<CompanyFinancials>> {
+    return this.withCache(
+      `financials:${symbol}`,
+      this.ttl.financials,
+      1,
+      (innerSignal) => this.buildFinancials(symbol, innerSignal),
+      signal,
+    )
+  }
+
+  private async buildFinancials(
+    symbol: string,
+    signal?: AbortSignal,
+  ): Promise<CompanyFinancials> {
+    // Live market metrics come from the (cached) quote; reported fundamentals
+    // come from the statistics endpoint, which may be plan-restricted.
+    const quoteResult = await this.quote(symbol, signal)
+    const quote = quoteResult.data
+    if (!quote) {
+      throw new NotFoundError(`No financial data is available for "${symbol}".`)
+    }
+
+    const reported = await this.fetchStatistics(symbol, signal)
+    const limited = reported === null
+
+    return {
+      symbol,
+      name: quote.name,
+      currency: quote.currency ?? reported?.currency ?? null,
+      exchange: quote.exchange ?? reported?.exchange ?? null,
+      high52Week: quote.high52Week,
+      low52Week: quote.low52Week,
+      averageVolume: quote.averageVolume,
+      marketCap: reported?.marketCap ?? null,
+      trailingPe: reported?.trailingPe ?? null,
+      eps: reported?.eps ?? null,
+      dividendYieldPercent: reported?.dividendYieldPercent ?? null,
+      revenue: reported?.revenue ?? null,
+      revenuePeriod: reported?.revenuePeriod ?? null,
+      dataStatus: quote.dataStatus,
+      limited,
+      limitationReason: limited ? STATISTICS_LIMITATION : null,
+    }
+  }
+
+  private async fetchStatistics(
+    symbol: string,
+    signal?: AbortSignal,
+  ): Promise<ReportedFundamentals | null> {
+    if (Date.now() < this.statisticsRestrictedUntil) return null
+
+    try {
+      return await this.provider.getStatistics(symbol, signal)
+    } catch (error) {
+      if (error instanceof ProviderPlanRestrictedError) {
+        this.statisticsRestrictedUntil = Date.now() + PROFILE_RESTRICTION_TTL_MS
+        return null
+      }
+      throw error
+    }
   }
 
   private async fetchProfile(

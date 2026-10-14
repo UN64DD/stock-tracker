@@ -15,6 +15,7 @@ import { MarketDataService } from './services/marketDataService.js'
 import type {
   CompanyProfile,
   HistoricalSeries,
+  ReportedFundamentals,
   StockProvider,
   StockQuote,
   StockSearchResult,
@@ -51,6 +52,7 @@ class FakeProvider implements StockProvider {
   readonly dataStatus = 'real-time' as const
   readonly dataStatusNote = 'Fake provider used in tests.'
   failure: Error | null = null
+  statisticsFailure: Error | null = null
 
   private maybeThrow(): void {
     if (this.failure) throw this.failure
@@ -122,6 +124,23 @@ class FakeProvider implements StockProvider {
       limitationReason: null,
     }
   }
+
+  async getStatistics(symbol: string): Promise<ReportedFundamentals | null> {
+    if (this.statisticsFailure) throw this.statisticsFailure
+    this.maybeThrow()
+    if (symbol === 'ZZZZ') return null
+    return {
+      symbol,
+      currency: 'USD',
+      exchange: 'NASDAQ',
+      marketCap: 2_500_000_000_000,
+      trailingPe: 28.5,
+      eps: 6.12,
+      dividendYieldPercent: 0.55,
+      revenue: 380_000_000_000,
+      revenuePeriod: 'TTM',
+    }
+  }
 }
 
 const testConfig: AppConfig = {
@@ -132,7 +151,7 @@ const testConfig: AppConfig = {
   providerCreditsPerDay: 100_000,
   requestTimeoutMs: 1000,
   corsOrigin: '*',
-  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000 },
+  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000 },
 }
 
 function buildApp(provider = new FakeProvider()) {
@@ -212,11 +231,102 @@ describe('history', () => {
     expect(res.body.data.points).toHaveLength(2)
   })
 
+  it.each(['1D', '1W', '1M', '3M', '6M', '1Y', '5Y'])(
+    'accepts the supported %s range',
+    async (range) => {
+      const { app } = buildApp()
+      const res = await request(app).get('/api/stocks/AAPL/history').query({ range })
+      expect(res.status).toBe(200)
+      expect(res.body.data.range).toBe(range)
+    },
+  )
+
   it('rejects an unsupported range', async () => {
     const { app } = buildApp()
-    const res = await request(app).get('/api/stocks/AAPL/history').query({ range: '5Y' })
+    const res = await request(app).get('/api/stocks/AAPL/history').query({ range: '2Y' })
     expect(res.status).toBe(400)
     expect(res.body.error.code).toBe('validation_error')
+  })
+
+  it('404s for an empty historical dataset', async () => {
+    const { app } = buildApp()
+    const res = await request(app).get('/api/stocks/ZZZZ/history').query({ range: '1M' })
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('not_found')
+  })
+
+  it('serves cached results when switching back to a previous range', async () => {
+    const { app, provider } = buildApp()
+    let calls = 0
+    const original = provider.getHistoricalPrices.bind(provider)
+    provider.getHistoricalPrices = (symbol, range) => {
+      calls += 1
+      return original(symbol, range)
+    }
+
+    await request(app).get('/api/stocks/AAPL/history').query({ range: '1M' })
+    await request(app).get('/api/stocks/AAPL/history').query({ range: '3M' })
+    const back = await request(app).get('/api/stocks/AAPL/history').query({ range: '1M' })
+
+    expect(back.body.data.range).toBe('1M')
+    expect(back.headers['x-data-cache']).toBe('hit')
+    expect(calls).toBe(2)
+  })
+})
+
+describe('financials', () => {
+  it('returns live metrics plus reported fundamentals when available', async () => {
+    const { app } = buildApp()
+    const res = await request(app).get('/api/stocks/AAPL/financials')
+    expect(res.status).toBe(200)
+    expect(res.body.data).toMatchObject({
+      symbol: 'AAPL',
+      marketCap: 2_500_000_000_000,
+      trailingPe: 28.5,
+      eps: 6.12,
+      dividendYieldPercent: 0.55,
+      high52Week: 150,
+      low52Week: 90,
+      averageVolume: 900_000,
+      revenuePeriod: 'TTM',
+      limited: false,
+      limitationReason: null,
+    })
+  })
+
+  it('degrades to live metrics when reported fundamentals are plan-restricted', async () => {
+    const provider = new FakeProvider()
+    provider.statisticsFailure = new ProviderPlanRestrictedError()
+    const { app } = buildApp(provider)
+    const res = await request(app).get('/api/stocks/AAPL/financials')
+    expect(res.status).toBe(200)
+    expect(res.body.data.limited).toBe(true)
+    expect(res.body.data.limitationReason).toBeTruthy()
+    // Missing reported metrics stay null, never silently zero.
+    expect(res.body.data.marketCap).toBeNull()
+    expect(res.body.data.trailingPe).toBeNull()
+    expect(res.body.data.eps).toBeNull()
+    expect(res.body.data.dividendYieldPercent).toBeNull()
+    expect(res.body.data.revenue).toBeNull()
+    // Live market data is still populated.
+    expect(res.body.data.high52Week).toBe(150)
+    expect(res.body.data.averageVolume).toBe(900_000)
+  })
+
+  it('404s when the symbol has no quote', async () => {
+    const { app } = buildApp()
+    const res = await request(app).get('/api/stocks/ZZZZ/financials')
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('not_found')
+  })
+
+  it('maps reported-fundamental provider failures safely', async () => {
+    const provider = new FakeProvider()
+    provider.statisticsFailure = new ProviderRateLimitError(30)
+    const { app } = buildApp(provider)
+    const res = await request(app).get('/api/stocks/AAPL/financials')
+    expect(res.status).toBe(429)
+    expect(res.body.error.code).toBe('provider_rate_limited')
   })
 })
 

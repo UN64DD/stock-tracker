@@ -10,8 +10,25 @@ const compactFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 })
 
-export function formatCurrency(value: number): string {
-  return currencyFormatter.format(value)
+const currencyFormatters = new Map<string, Intl.NumberFormat>()
+
+function currencyFormatterFor(currency: string): Intl.NumberFormat {
+  const cached = currencyFormatters.get(currency)
+  if (cached) return cached
+  let formatter: Intl.NumberFormat
+  try {
+    formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency })
+  } catch {
+    formatter = currencyFormatter
+  }
+  currencyFormatters.set(currency, formatter)
+  return formatter
+}
+
+export function formatCurrency(value: number, currency = 'USD'): string {
+  const code = currency?.trim() || 'USD'
+  if (code === 'USD') return currencyFormatter.format(value)
+  return currencyFormatterFor(code.toUpperCase()).format(value)
 }
 
 export function formatNumber(value: number): string {
@@ -22,17 +39,27 @@ export function formatCompact(value: number): string {
   return compactFormatter.format(value)
 }
 
-export function formatMarketCap(value: number): string {
-  return `$${compactFormatter.format(value)}`
+export function formatCompactCurrency(value: number, currency = 'USD'): string {
+  const symbol = currencySymbol(currency)
+  return `${symbol}${compactFormatter.format(value)}`
+}
+
+export function formatMarketCap(value: number, currency = 'USD'): string {
+  return formatCompactCurrency(value, currency)
+}
+
+function currencySymbol(currency: string): string {
+  const parts = currencyFormatterFor(currency?.trim()?.toUpperCase() || 'USD').formatToParts(0)
+  return parts.find((part) => part.type === 'currency')?.value ?? '$'
 }
 
 export function formatVolume(value: number): string {
   return compactFormatter.format(value)
 }
 
-export function formatChange(value: number): string {
+export function formatChange(value: number, currency = 'USD'): string {
   const sign = value > 0 ? '+' : value < 0 ? '−' : ''
-  return `${sign}${currencyFormatter.format(Math.abs(value))}`
+  return `${sign}${formatCurrency(Math.abs(value), currency)}`
 }
 
 export function formatPercent(value: number, withSign = true): string {

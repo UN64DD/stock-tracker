@@ -8,6 +8,7 @@ interface PriceChangeProps {
   showIcon?: boolean
   showAbsolute?: boolean
   size?: 'sm' | 'md'
+  currency?: string
   className?: string
 }
 
@@ -17,6 +18,7 @@ export function PriceChange({
   showIcon = true,
   showAbsolute = true,
   size = 'sm',
+  currency = 'USD',
   className,
 }: PriceChangeProps) {
   const direction =
@@ -45,7 +47,7 @@ export function PriceChange({
       )}
     >
       {showIcon ? <Icon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
-      {showAbsolute ? <span>{formatChange(change)}</span> : null}
+      {showAbsolute ? <span>{formatChange(change, currency)}</span> : null}
       <span>({formatPercent(changePercent)})</span>
     </span>
   )

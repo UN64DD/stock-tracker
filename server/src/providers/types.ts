@@ -49,6 +49,29 @@ export interface HistoricalSeries {
   points: HistoricalPoint[]
 }
 
+/**
+ * Reported company fundamentals sourced from the provider's statistics
+ * endpoint. Every field is optional because provider plans expose different
+ * subsets; `null` always means "not available", never zero.
+ */
+export interface ReportedFundamentals {
+  symbol: string
+  currency: string | null
+  exchange: string | null
+  /** Market value of outstanding shares, in `currency`. */
+  marketCap: number | null
+  /** Trailing price-to-earnings ratio. */
+  trailingPe: number | null
+  /** Diluted trailing-twelve-month earnings per share. */
+  eps: number | null
+  /** Trailing annual dividend yield, normalized to a percentage (e.g. 0.57 = 0.57%). */
+  dividendYieldPercent: number | null
+  /** Most recently reported revenue, in `currency`. */
+  revenue: number | null
+  /** Human-readable period the revenue figure covers (e.g. "TTM"). */
+  revenuePeriod: string | null
+}
+
 export interface CompanyProfile {
   symbol: string
   name: string | null
@@ -70,6 +93,34 @@ export interface CompanyProfile {
   limitationReason: string | null
 }
 
+/**
+ * Financial overview for the stock details page. Mixes live market data
+ * (52-week range, average volume) with figures the company reported for a
+ * historical period (market cap, P/E, EPS, dividend yield, revenue). The
+ * `limited` flag marks the case where the provider plan withholds reported
+ * fundamentals, so the UI can explain the gap instead of showing zeroes.
+ */
+export interface CompanyFinancials {
+  symbol: string
+  name: string | null
+  currency: string | null
+  exchange: string | null
+  /** Current market data. */
+  high52Week: number | null
+  low52Week: number | null
+  averageVolume: number | null
+  /** Reported fundamentals (historical period). */
+  marketCap: number | null
+  trailingPe: number | null
+  eps: number | null
+  dividendYieldPercent: number | null
+  revenue: number | null
+  revenuePeriod: string | null
+  dataStatus: DataStatus
+  limited: boolean
+  limitationReason: string | null
+}
+
 export interface StockProvider {
   readonly name: string
   readonly configured: boolean
@@ -84,4 +135,10 @@ export interface StockProvider {
     signal?: AbortSignal,
   ): Promise<HistoricalSeries | null>
   getCompanyProfile(symbol: string, signal?: AbortSignal): Promise<CompanyProfile | null>
+  /**
+   * Reported fundamentals such as market cap, P/E, EPS and dividend yield.
+   * Providers may throw a plan-restricted error when the endpoint is not
+   * included in the configured plan; callers degrade gracefully.
+   */
+  getStatistics(symbol: string, signal?: AbortSignal): Promise<ReportedFundamentals | null>
 }

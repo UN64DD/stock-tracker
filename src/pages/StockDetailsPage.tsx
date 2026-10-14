@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, Briefcase, Building, Newspaper } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -19,33 +19,57 @@ import { buttonVariants } from '@/components/ui/button-variants'
 import { getNewsForSymbol } from '@/lib/stocks'
 import { isApiError } from '@/lib/api'
 import { toStockView, UNAVAILABLE } from '@/lib/liveStock'
+import { computePeriodStats } from '@/lib/chart'
 import {
   formatCompact,
+  formatCompactCurrency,
   formatCurrency,
   formatMarketCap,
+  formatPercent,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { useHistory, useProfile, useQuote } from '@/hooks/useMarketData'
-import type { ChartRange, NewsArticle } from '@/types'
+import {
+  useFinancials,
+  useHistory,
+  useProfile,
+  useQuote,
+} from '@/hooks/useMarketData'
+import type { ChartRange, ChartType, NewsArticle } from '@/types'
 
-function Stat({
+function Metric({
   label,
   value,
   hint,
+  unavailable,
 }: {
   label: string
   value: string
   hint?: string
+  unavailable?: boolean
 }) {
   return (
     <div className="rounded-lg border border-border bg-muted/30 p-3">
       <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-semibold tabular-nums text-foreground">
+      <p
+        className={cn(
+          'mt-1 text-sm font-semibold tabular-nums',
+          unavailable ? 'text-muted-foreground' : 'text-foreground',
+        )}
+      >
         {value}
       </p>
       {hint ? (
         <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{hint}</p>
       ) : null}
+    </div>
+  )
+}
+
+function SummaryRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums text-foreground">{children}</span>
     </div>
   )
 }
@@ -66,6 +90,7 @@ export function StockDetailsPage() {
   const { symbol = '' } = useParams()
   const normalized = symbol.trim().toUpperCase()
   const [range, setRange] = useState<ChartRange>('3M')
+  const [chartType, setChartType] = useState<ChartType>('area')
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(
     null,
   )
@@ -73,11 +98,19 @@ export function StockDetailsPage() {
   const quoteState = useQuote(normalized || undefined)
   const profileState = useProfile(normalized || undefined)
   const historyState = useHistory(normalized || undefined, range)
+  const financialsState = useFinancials(normalized || undefined)
+
+  const chartData = useMemo(
+    () => historyState.data?.points ?? [],
+    [historyState.data],
+  )
+  const periodStats = useMemo(() => computePeriodStats(chartData), [chartData])
 
   const handleRetry = () => {
     quoteState.reload()
     profileState.reload()
     historyState.reload()
+    financialsState.reload()
   }
 
   if (quoteState.loading && !quoteState.data) {
@@ -118,22 +151,23 @@ export function StockDetailsPage() {
 
   const quote = quoteState.data
   const profile = profileState.data
+  const financials = financialsState.data
   const stock = toStockView(quote, profile)
-  const chartData = historyState.data?.points ?? []
   const relatedNews = getNewsForSymbol(stock.symbol)
 
-  const rangeChange =
-    chartData.length > 1
-      ? chartData[chartData.length - 1].value - chartData[0].value
-      : 0
-  const rangeChangePercent =
-    chartData.length > 1 && chartData[0].value !== 0
-      ? (rangeChange / chartData[0].value) * 100
-      : 0
+  const currency = financials?.currency ?? quote.currency ?? profile?.currency ?? 'USD'
 
-  const currency = quote.currency ?? profile?.currency ?? 'USD'
-  const formatMoney = (value: number | null) =>
-    value != null ? formatCurrency(value) : UNAVAILABLE
+  const marketCap = financials?.marketCap ?? profile?.marketCap ?? null
+  const high52Week = financials?.high52Week ?? quote.high52Week
+  const low52Week = financials?.low52Week ?? quote.low52Week
+  const averageVolume = financials?.averageVolume ?? quote.averageVolume
+
+  const reportedLoading = financialsState.loading && !financials
+  const reportedErrored = Boolean(financialsState.error) && !financials
+
+  const chartPositive = periodStats
+    ? periodStats.changePercent >= 0
+    : stock.changePercent >= 0
 
   return (
     <div className="space-y-6">
@@ -141,10 +175,7 @@ export function StockDetailsPage() {
 
       <PageHeader
         title={stock.name}
-        description={
-          profile?.description ||
-          `Live market data for ${stock.symbol}.`
-        }
+        description={profile?.description || `Live market data for ${stock.symbol}.`}
         badge={
           quoteState.meta ? (
             <LiveBadge
@@ -192,16 +223,24 @@ export function StockDetailsPage() {
           </div>
           <div className="ml-auto text-right">
             <p className="text-2xl font-semibold tabular-nums text-foreground">
-              {formatCurrency(quote.price)}
+              {formatCurrency(quote.price, currency)}
             </p>
-            <PriceChange
-              change={stock.change}
-              changePercent={stock.changePercent}
-              size="md"
-              className="justify-end"
-            />
+            <div className="flex items-center justify-end gap-2">
+              <span className="text-xs text-muted-foreground">Today</span>
+              <PriceChange
+                change={stock.change}
+                changePercent={stock.changePercent}
+                size="md"
+                currency={currency}
+                className="justify-end"
+              />
+            </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Prev close {formatMoney(quote.previousClose)} · {currency}
+              Prev close{' '}
+              {quote.previousClose != null
+                ? formatCurrency(quote.previousClose, currency)
+                : UNAVAILABLE}{' '}
+              · {currency}
             </p>
           </div>
         </div>
@@ -212,16 +251,61 @@ export function StockDetailsPage() {
           <CardHeader>
             <CardTitle>Price history</CardTitle>
             <p className="text-sm text-muted-foreground">
-              {historyState.data?.interval ?? 'live'} interval · {range} range ·{' '}
-              <PriceChange
-                change={rangeChange}
-                changePercent={rangeChangePercent}
-                showAbsolute={false}
-                className="text-xs"
-              />
+              {historyState.data?.interval ?? 'live'} interval · {range} range
+              {periodStats ? (
+                <>
+                  {' · '}
+                  <span className="text-muted-foreground">Period</span>{' '}
+                  <PriceChange
+                    change={periodStats.change}
+                    changePercent={periodStats.changePercent}
+                    showAbsolute={false}
+                    currency={currency}
+                    className="text-xs"
+                  />
+                </>
+              ) : null}
             </p>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <Metric
+                label="Current price"
+                value={formatCurrency(quote.price, currency)}
+              />
+              <Metric
+                label="Period open"
+                value={
+                  periodStats ? formatCurrency(periodStats.open, currency) : UNAVAILABLE
+                }
+              />
+              <Metric
+                label="Period close"
+                value={
+                  periodStats ? formatCurrency(periodStats.close, currency) : UNAVAILABLE
+                }
+              />
+              <Metric
+                label="Period high"
+                value={
+                  periodStats ? formatCurrency(periodStats.high, currency) : UNAVAILABLE
+                }
+              />
+              <Metric
+                label="Period low"
+                value={
+                  periodStats ? formatCurrency(periodStats.low, currency) : UNAVAILABLE
+                }
+              />
+              <Metric
+                label={`${range} change`}
+                value={
+                  periodStats ? formatPercent(periodStats.changePercent) : UNAVAILABLE
+                }
+                unavailable={!periodStats}
+              />
+            </div>
+
             {historyState.loading && chartData.length === 0 ? (
               <LoadingState label="Loading price history…" />
             ) : historyState.error && chartData.length === 0 ? (
@@ -246,9 +330,12 @@ export function StockDetailsPage() {
               <StockChart
                 data={chartData}
                 gradientId={`details-chart-${stock.symbol}`}
-                positive={stock.changePercent >= 0}
+                positive={chartPositive}
                 activeRange={range}
                 onRangeChange={setRange}
+                chartType={chartType}
+                onChartTypeChange={setChartType}
+                currency={currency}
                 height={320}
               />
             )}
@@ -257,96 +344,193 @@ export function StockDetailsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Key statistics</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Building className="size-4 text-muted-foreground" aria-hidden="true" />
+              Company summary
+            </CardTitle>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-3 pt-3">
-            <Stat
-              label="Market cap"
-              value={
-                profile?.marketCap != null
-                  ? formatMarketCap(profile.marketCap)
-                  : UNAVAILABLE
-              }
-            />
-            <Stat label="Sector" value={profile?.sector ?? UNAVAILABLE} />
-            <Stat
-              label="P/E ratio"
-              value={UNAVAILABLE}
-              hint="Not on free tier"
-            />
-            <Stat label="EPS" value={UNAVAILABLE} hint="Not on free tier" />
-            <Stat
-              label="Dividend yield"
-              value={UNAVAILABLE}
-              hint="Not on free tier"
-            />
-            <Stat label="Industry" value={profile?.industry ?? UNAVAILABLE} />
-            <Stat
-              label="52-week high"
-              value={formatMoney(quote.high52Week)}
-            />
-            <Stat label="52-week low" value={formatMoney(quote.low52Week)} />
-            <Stat
-              label="Volume"
-              value={quote.volume != null ? formatCompact(quote.volume) : UNAVAILABLE}
-            />
-            <Stat
-              label="Avg volume"
-              value={
-                quote.averageVolume != null
-                  ? formatCompact(quote.averageVolume)
-                  : UNAVAILABLE
-              }
-            />
+          <CardContent className="space-y-3 pt-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground">{stock.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {stock.symbol}
+                {quote.exchange ? ` · ${quote.exchange}` : ''}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 text-xs">
+              {profile?.sector ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-muted-foreground">
+                  <Briefcase className="size-3.5" aria-hidden="true" />
+                  {profile.sector}
+                </span>
+              ) : null}
+              {profile?.industry ? (
+                <span className="rounded-full bg-muted px-2.5 py-1 text-muted-foreground">
+                  {profile.industry}
+                </span>
+              ) : null}
+            </div>
+
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {profileState.loading && !profile
+                ? 'Loading company profile…'
+                : profile?.description ||
+                  'No company description is available for this symbol.'}
+            </p>
+
+            <div className="space-y-2 border-t border-border pt-3">
+              <SummaryRow label="Latest price">
+                {formatCurrency(quote.price, currency)}
+              </SummaryRow>
+              <SummaryRow label="Daily movement">
+                <PriceChange
+                  change={stock.change}
+                  changePercent={stock.changePercent}
+                  currency={currency}
+                  className="justify-end text-sm"
+                />
+              </SummaryRow>
+              <SummaryRow label="Market cap">
+                {marketCap != null ? formatMarketCap(marketCap, currency) : UNAVAILABLE}
+              </SummaryRow>
+              <SummaryRow label={`${range} performance`}>
+                {periodStats ? (
+                  <PriceChange
+                    change={periodStats.change}
+                    changePercent={periodStats.changePercent}
+                    showAbsolute={false}
+                    currency={currency}
+                    className="justify-end text-sm"
+                  />
+                ) : (
+                  UNAVAILABLE
+                )}
+              </SummaryRow>
+            </div>
           </CardContent>
         </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Building className="size-4 text-muted-foreground" aria-hidden="true" />
-            Company overview
-          </CardTitle>
+          <CardTitle>Financials</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Live market data versus figures the company most recently reported.
+          </p>
         </CardHeader>
-        <CardContent className="space-y-3 pt-3">
-          {profileState.loading && !profile ? (
-            <LoadingState label="Loading company profile…" />
-          ) : (
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              {profile?.description ||
-                'No company description is available for this symbol.'}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            {profile?.sector ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-                <Briefcase className="size-3.5" aria-hidden="true" />
-                {profile.sector}
-              </span>
+        <CardContent className="space-y-5 pt-3">
+          <section className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Live market data
+            </h3>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Metric
+                label="52-week high"
+                value={
+                  high52Week != null
+                    ? formatCurrency(high52Week, currency)
+                    : UNAVAILABLE
+                }
+                unavailable={high52Week == null}
+              />
+              <Metric
+                label="52-week low"
+                value={
+                  low52Week != null
+                    ? formatCurrency(low52Week, currency)
+                    : UNAVAILABLE
+                }
+                unavailable={low52Week == null}
+              />
+              <Metric
+                label="Average volume"
+                value={
+                  averageVolume != null ? formatCompact(averageVolume) : UNAVAILABLE
+                }
+                hint="Provider-reported average"
+                unavailable={averageVolume == null}
+              />
+            </div>
+          </section>
+
+          <section className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Reported fundamentals
+            </h3>
+            {reportedLoading ? (
+              <LoadingState variant="rows" label="Loading reported financials…" />
+            ) : reportedErrored ? (
+              <ErrorState
+                title="Reported financials unavailable"
+                description={
+                  isApiError(financialsState.error)
+                    ? financialsState.error.message
+                    : 'Could not load reported financials right now.'
+                }
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={financialsState.reload}
+                  >
+                    Try again
+                  </Button>
+                }
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                <Metric
+                  label="Market cap"
+                  value={marketCap != null ? formatMarketCap(marketCap, currency) : UNAVAILABLE}
+                  hint={marketCap == null ? 'Not available' : undefined}
+                  unavailable={marketCap == null}
+                />
+                <Metric
+                  label="P/E ratio"
+                  value={financials?.trailingPe != null ? financials.trailingPe.toFixed(2) : UNAVAILABLE}
+                  hint="Trailing 12 months"
+                  unavailable={financials?.trailingPe == null}
+                />
+                <Metric
+                  label="EPS"
+                  value={
+                    financials?.eps != null
+                      ? formatCurrency(financials.eps, currency)
+                      : UNAVAILABLE
+                  }
+                  hint="Diluted, TTM"
+                  unavailable={financials?.eps == null}
+                />
+                <Metric
+                  label="Dividend yield"
+                  value={
+                    financials?.dividendYieldPercent != null
+                      ? `${financials.dividendYieldPercent.toFixed(2)}%`
+                      : UNAVAILABLE
+                  }
+                  hint="Trailing 12 months"
+                  unavailable={financials?.dividendYieldPercent == null}
+                />
+                <Metric
+                  label="Revenue"
+                  value={
+                    financials?.revenue != null
+                      ? formatCompactCurrency(financials.revenue, currency)
+                      : UNAVAILABLE
+                  }
+                  hint={financials?.revenuePeriod ?? 'Latest reported'}
+                  unavailable={financials?.revenue == null}
+                />
+              </div>
+            )}
+            {financials?.limited ? (
+              <p className="text-xs text-muted-foreground">
+                {financials.limitationReason ??
+                  'Reported fundamentals are not available on the current data plan.'}
+              </p>
             ) : null}
-            {profile?.industry ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-                {profile.industry}
-              </span>
-            ) : null}
-            {profile?.country ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-                {profile.country}
-              </span>
-            ) : null}
-            {profile?.employees != null ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
-                {formatCompact(profile.employees)} employees
-              </span>
-            ) : null}
-          </div>
-          {profile?.limited ? (
-            <p className="text-xs text-muted-foreground">
-              {profile.limitationReason ??
-                'Only a limited company profile is available on the current data plan.'}
-            </p>
-          ) : null}
+          </section>
         </CardContent>
       </Card>
 

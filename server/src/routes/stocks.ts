@@ -101,5 +101,14 @@ export function createStocksRouter(service: MarketDataService): Router {
     }),
   )
 
+  router.get(
+    '/:symbol/financials',
+    asyncHandler(async (req, res) => {
+      const symbol = normalizeSymbol(req.params.symbol)
+      const result = await service.financials(symbol, requestSignal(res))
+      sendResult(res, service, result)
+    }),
+  )
+
   return router
 }

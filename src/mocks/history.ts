@@ -34,7 +34,7 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 })
 
-export const chartRanges: ChartRange[] = ['1D', '1W', '1M', '3M', '1Y']
+export { chartRanges } from '@/lib/chart'
 
 const rangeConfig: Record<ChartRange, RangeConfig> = {
   '1D': {
@@ -61,10 +61,22 @@ const rangeConfig: Record<ChartRange, RangeConfig> = {
     volatility: 0.03,
     label: (date) => dateFormatter.format(date),
   },
+  '6M': {
+    points: 63,
+    stepMs: 3 * 86_400_000,
+    volatility: 0.045,
+    label: (date) => dateFormatter.format(date),
+  },
   '1Y': {
     points: 52,
     stepMs: 7 * 86_400_000,
     volatility: 0.06,
+    label: (date) => dateFormatter.format(date),
+  },
+  '5Y': {
+    points: 60,
+    stepMs: 30 * 86_400_000,
+    volatility: 0.12,
     label: (date) => dateFormatter.format(date),
   },
 }

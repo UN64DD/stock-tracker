@@ -1,8 +1,16 @@
 import { ValidationError } from './errors.js'
 
-export type ChartRange = '1D' | '1W' | '1M' | '3M' | '1Y'
+export type ChartRange = '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | '5Y'
 
-export const CHART_RANGES: readonly ChartRange[] = ['1D', '1W', '1M', '3M', '1Y'] as const
+export const CHART_RANGES: readonly ChartRange[] = [
+  '1D',
+  '1W',
+  '1M',
+  '3M',
+  '6M',
+  '1Y',
+  '5Y',
+] as const
 
 const SYMBOL_PATTERN = /^[A-Z0-9][A-Z0-9.-]{0,14}$/
 
