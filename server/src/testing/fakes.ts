@@ -6,6 +6,9 @@ import { ProviderBudget } from '../lib/budget.js'
 import { TTLCache } from '../lib/cache.js'
 import type { ChartRange } from '../lib/validate.js'
 import { MarketDataService } from '../services/marketDataService.js'
+import { NewsService } from '../services/newsService.js'
+import { createSentimentService } from '../services/sentimentService.js'
+import type { NewsProvider, NormalizedNewsArticle } from '../providers/newsTypes.js'
 import type {
   CompanyProfile,
   HistoricalSeries,
@@ -21,13 +24,18 @@ export const TEST_CONFIG: AppConfig = {
   stockApiKey: 'test-key',
   providerCreditsPerMinute: 10_000,
   providerCreditsPerDay: 100_000,
+  newsProvider: 'fake',
+  newsApiKey: 'test-news-key',
+  newsCreditsPerMinute: 10_000,
+  newsCreditsPerDay: 100_000,
+  newsPageSize: 12,
   requestTimeoutMs: 1000,
   corsOrigin: '*',
   databasePath: ':memory:',
   sessionTtlSeconds: 3600,
   authCookieName: 'st_session',
   cookieSecure: false,
-  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000 },
+  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000, news: 1000 },
 }
 
 function makeQuote(symbol: string): StockQuote {
@@ -124,6 +132,107 @@ export interface TestApp {
   app: Express
   db: DatabaseConnection
   config: AppConfig
+  newsProvider: StubNewsProvider
+}
+
+/** Deterministic news used across tests (dates are fixed timestamps). */
+export function stubNewsArticles(): NormalizedNewsArticle[] {
+  return [
+    {
+      id: 'n1',
+      headline: 'Company beats earnings as shares surge',
+      summary: 'Strong growth and a raised dividend.',
+      source: 'Test Wire',
+      url: 'https://example.com/n1',
+      publishedAt: 5,
+      tickers: ['AAPL'],
+      thumbnail: null,
+      category: 'company news',
+      language: 'en',
+    },
+    {
+      id: 'n2',
+      headline: 'Regulator opens probe; shares fall',
+      summary: 'Investors weigh the risk.',
+      source: 'Test Wire',
+      url: 'https://example.com/n2',
+      publishedAt: 4,
+      tickers: ['AAPL'],
+      thumbnail: null,
+      category: 'company news',
+      language: 'en',
+    },
+    {
+      id: 'n3',
+      headline: 'Analyst upgrade lifts outlook',
+      summary: null,
+      source: 'Test Wire',
+      url: 'https://example.com/n3',
+      publishedAt: 3,
+      tickers: ['AAPL'],
+      thumbnail: null,
+      category: 'company news',
+      language: 'en',
+    },
+    {
+      id: 'n4',
+      headline: 'Routine filing notes no material change',
+      summary: null,
+      source: 'Test Wire',
+      url: 'https://example.com/n4',
+      publishedAt: 2,
+      tickers: [],
+      thumbnail: null,
+      category: 'general',
+      language: 'en',
+    },
+    // Duplicate id (older) — must be dropped in favour of n2 above.
+    {
+      id: 'n2',
+      headline: 'Duplicate id should be dropped',
+      summary: null,
+      source: 'Test Wire',
+      url: 'https://example.com/dup-id',
+      publishedAt: 1,
+      tickers: [],
+      thumbnail: null,
+      category: 'general',
+      language: 'en',
+    },
+    // Duplicate url (older) — must be dropped in favour of n1 above.
+    {
+      id: 'n5',
+      headline: 'Duplicate url should be dropped',
+      summary: null,
+      source: 'Test Wire',
+      url: 'https://example.com/n1',
+      publishedAt: 0,
+      tickers: [],
+      thumbnail: null,
+      category: 'general',
+      language: 'en',
+    },
+  ]
+}
+
+export class StubNewsProvider implements NewsProvider {
+  readonly name = 'fake-news'
+  readonly note = 'Stub news provider for tests.'
+  configured = true
+  calls = 0
+  failure: Error | null = null
+
+  async getCompanyNews(): Promise<NormalizedNewsArticle[]> {
+    this.calls += 1
+    if (this.failure) throw this.failure
+    return stubNewsArticles()
+  }
+
+  async getMarketNews(): Promise<NormalizedNewsArticle[]> {
+    this.calls += 1
+    if (this.failure) throw this.failure
+    return stubNewsArticles()
+  }
 }
 
 /** Builds an app backed by a fresh in-memory SQLite database. */
@@ -135,9 +244,18 @@ export function createTestApp(overrides: Partial<AppConfig> = {}): TestApp {
     config.cacheTtl,
     new ProviderBudget(config.providerCreditsPerMinute, config.providerCreditsPerDay),
   )
+  const newsProvider = new StubNewsProvider()
+  const newsService = new NewsService(
+    newsProvider,
+    new TTLCache(),
+    config.cacheTtl.news,
+    new ProviderBudget(config.newsCreditsPerMinute, config.newsCreditsPerDay),
+    createSentimentService(),
+    config.newsPageSize,
+  )
   const db = openDatabase({ databasePath: ':memory:' })
-  const app = createApp({ config, service, database: db })
-  return { app, db, config }
+  const app = createApp({ config, service, newsService, database: db })
+  return { app, db, config, newsProvider }
 }
 
 /** Extracts a `name=value` cookie pair from a response's Set-Cookie header. */

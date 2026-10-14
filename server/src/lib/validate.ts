@@ -60,3 +60,45 @@ export function parseSearchQuery(raw: string | undefined): string {
   }
   return query
 }
+
+/**
+ * Categories accepted by the news provider's market-news endpoint. Kept here so
+ * both the route validators and the provider share a single source of truth.
+ */
+export const MARKET_NEWS_CATEGORIES = ['general', 'forex', 'crypto', 'merger'] as const
+
+export type MarketNewsCategory = (typeof MARKET_NEWS_CATEGORIES)[number]
+
+export function parseMarketNewsCategory(
+  raw: string | undefined,
+  fallback: MarketNewsCategory = 'general',
+): MarketNewsCategory {
+  if (!raw) return fallback
+  const category = raw.trim().toLowerCase() as MarketNewsCategory
+  if (!MARKET_NEWS_CATEGORIES.includes(category)) {
+    throw new ValidationError(
+      `Unsupported news category "${raw}". Supported categories: ${MARKET_NEWS_CATEGORIES.join(', ')}.`,
+    )
+  }
+  return category
+}
+
+/** Parses a 1-based page number, bounded to a sane maximum. */
+export function parsePage(raw: unknown, max = 50): number {
+  if (raw === undefined || raw === null || raw === '') return 1
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new ValidationError(`"page" must be an integer between 1 and ${max}.`)
+  }
+  return value
+}
+
+/** Parses an optional page size, clamped to the given bounds. */
+export function parsePageSize(raw: unknown, fallback: number, max: number): number {
+  if (raw === undefined || raw === null || raw === '') return fallback
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1) {
+    throw new ValidationError('"pageSize" must be a positive integer.')
+  }
+  return Math.min(value, max)
+}

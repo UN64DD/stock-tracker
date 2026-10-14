@@ -1,18 +1,26 @@
 import { useMemo, useState } from 'react'
-import { Newspaper } from 'lucide-react'
+import { Newspaper, Settings } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { DemoBadge } from '@/components/common/DemoBadge'
+import { LiveBadge } from '@/components/common/LiveBadge'
 import { SearchInput } from '@/components/common/SearchInput'
 import { NewsCard } from '@/components/common/NewsCard'
 import { NewsDetailDialog } from '@/components/common/NewsDetailDialog'
+import { SentimentSummaryCard } from '@/components/common/SentimentSummaryCard'
 import { EmptyState } from '@/components/common/EmptyState'
+import { ErrorState } from '@/components/common/ErrorState'
+import { LoadingState } from '@/components/common/LoadingState'
+import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { newsArticles, newsCategories } from '@/mocks/news'
-import { sortNewsByDate } from '@/lib/stocks'
-import type { NewsArticle, NewsCategory, Sentiment } from '@/types'
+import {
+  describeNewsError,
+  filterNewsArticles,
+  isNewsConfiguredError,
+  MARKET_NEWS_CATEGORIES,
+} from '@/lib/news'
+import { useMarketNews } from '@/hooks/useMarketData'
+import type { MarketNewsCategory, NewsArticle, Sentiment } from '@/types'
 
-type CategoryFilter = NewsCategory | 'all'
 type SentimentFilter = Sentiment | 'all'
 
 const sentimentOptions: { value: SentimentFilter; label: string }[] = [
@@ -23,55 +31,52 @@ const sentimentOptions: { value: SentimentFilter; label: string }[] = [
 ]
 
 export function MarketNewsPage() {
+  const [category, setCategory] = useState<MarketNewsCategory>('general')
   const [query, setQuery] = useState('')
-  const [category, setCategory] = useState<CategoryFilter>('all')
   const [sentiment, setSentiment] = useState<SentimentFilter>('all')
-  const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(
-    null,
+  const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(null)
+
+  const feed = useMarketNews(category)
+  const results = useMemo(
+    () => filterNewsArticles(feed.articles, { query, sentiment }),
+    [feed.articles, query, sentiment],
   )
 
-  const results = useMemo(() => {
-    const term = query.trim().toLowerCase()
-    const filtered = newsArticles.filter((article) => {
-      const matchesCategory =
-        category === 'all' || article.category === category
-      const matchesSentiment =
-        sentiment === 'all' || article.sentiment === sentiment
-      const matchesQuery =
-        !term ||
-        article.headline.toLowerCase().includes(term) ||
-        article.source.toLowerCase().includes(term) ||
-        (article.ticker?.toLowerCase().includes(term) ?? false) ||
-        (article.company?.toLowerCase().includes(term) ?? false)
-      return matchesCategory && matchesSentiment && matchesQuery
-    })
-    return sortNewsByDate(filtered)
-  }, [query, category, sentiment])
+  const isFiltered = query.trim().length > 0 || sentiment !== 'all'
+  const hasArticles = feed.articles.length > 0
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Market News"
-        description="Illustrative headlines for layout testing. Sources and articles are fictional and links are placeholders."
-        badge={<DemoBadge label="Fictional content" />}
+        description="Live general market headlines from the Finnhub free tier, scored by a transparent sentiment heuristic."
+        badge={
+          feed.meta ? (
+            <LiveBadge
+              status={feed.meta.dataStatus}
+              cached={feed.meta.cached}
+              stale={feed.meta.stale}
+            />
+          ) : null
+        }
       />
 
       <div className="space-y-4">
         <div className="flex flex-wrap gap-2" role="group" aria-label="News categories">
-          {(['all', ...newsCategories] as CategoryFilter[]).map((option) => (
+          {MARKET_NEWS_CATEGORIES.map((option) => (
             <button
-              key={option}
+              key={option.value}
               type="button"
-              aria-pressed={category === option}
-              onClick={() => setCategory(option)}
+              aria-pressed={category === option.value}
+              onClick={() => setCategory(option.value)}
               className={cn(
                 'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                category === option
+                category === option.value
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border bg-background text-muted-foreground hover:text-foreground',
               )}
             >
-              {option === 'all' ? 'All' : option}
+              {option.label}
             </button>
           ))}
         </div>
@@ -104,22 +109,64 @@ export function MarketNewsPage() {
         </div>
       </div>
 
-      {results.length === 0 ? (
+      {feed.sentiment && hasArticles ? (
+        <SentimentSummaryCard summary={feed.sentiment} />
+      ) : null}
+
+      {feed.loading && !hasArticles ? (
+        <LoadingState label="Loading market news…" />
+      ) : feed.error && !hasArticles ? (
+        isNewsConfiguredError(feed.error) ? (
+          <EmptyState
+            icon={Settings}
+            title={describeNewsError(feed.error).title}
+            description={describeNewsError(feed.error).description}
+          />
+        ) : (
+          <ErrorState
+            {...describeNewsError(feed.error)}
+            action={
+              <Button type="button" variant="outline" onClick={feed.reload}>
+                Try again
+              </Button>
+            }
+          />
+        )
+      ) : results.length === 0 ? (
         <EmptyState
           icon={Newspaper}
-          title="No articles match your filters"
-          description="Try a different category, sentiment, or search term. This demo contains a limited set of fictional articles."
+          title={isFiltered ? 'No articles match your filters' : 'No articles available'}
+          description={
+            isFiltered
+              ? 'Try a different sentiment or search term.'
+              : 'The news provider returned no articles for this category right now.'
+          }
         />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {results.map((article) => (
-            <NewsCard
-              key={article.id}
-              article={article}
-              onSelect={setSelectedArticle}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {results.map((article) => (
+              <NewsCard
+                key={article.id}
+                article={article}
+                onSelect={setSelectedArticle}
+              />
+            ))}
+          </div>
+
+          {feed.hasMore && !isFiltered ? (
+            <div className="flex justify-center">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={feed.loadMore}
+                disabled={feed.loadingMore}
+              >
+                {feed.loadingMore ? 'Loading…' : 'Load more'}
+              </Button>
+            </div>
+          ) : null}
+        </>
       )}
 
       <NewsDetailDialog

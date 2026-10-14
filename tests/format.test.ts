@@ -6,6 +6,7 @@ import {
   formatCurrency,
   formatMarketCap,
   formatPercent,
+  formatRelativeToNow,
 } from '@/lib/format'
 
 describe('formatCurrency', () => {
@@ -59,5 +60,20 @@ describe('formatChange', () => {
 
   it('respects the requested currency', () => {
     expect(formatChange(1.23, 'EUR')).toContain('€1.23')
+  })
+})
+
+describe('formatRelativeToNow', () => {
+  const now = Date.UTC(2026, 0, 5, 16, 0, 0)
+
+  it('formats recent timestamps relative to the supplied clock', () => {
+    expect(formatRelativeToNow(new Date(now - 20_000).toISOString(), now)).toBe('just now')
+    expect(formatRelativeToNow(new Date(now - 5 * 60_000).toISOString(), now)).toBe('5m ago')
+    expect(formatRelativeToNow(new Date(now - 3 * 3_600_000).toISOString(), now)).toBe('3h ago')
+    expect(formatRelativeToNow(new Date(now - 2 * 86_400_000).toISOString(), now)).toBe('2d ago')
+  })
+
+  it('clamps future timestamps to "just now"', () => {
+    expect(formatRelativeToNow(new Date(now + 60_000).toISOString(), now)).toBe('just now')
   })
 })

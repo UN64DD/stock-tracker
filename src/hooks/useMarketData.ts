@@ -1,6 +1,8 @@
 import {
+  fetchCompanyNews,
   fetchFinancials,
   fetchHistory,
+  fetchMarketNews,
   fetchProfile,
   fetchQuote,
   fetchQuotes,
@@ -8,6 +10,7 @@ import {
 } from '@/lib/api'
 import { useAsync } from '@/hooks/useAsync'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { useNewsFeed, type NewsFeedState } from '@/hooks/useNewsFeed'
 
 export function useSymbolSearch(query: string, limit = 12) {
   const debounced = useDebouncedValue(query.trim(), 400)
@@ -56,5 +59,26 @@ export function useFinancials(symbol: string | undefined) {
     (signal) => fetchFinancials(symbol ?? '', signal),
     [symbol],
     Boolean(symbol),
+  )
+}
+
+export function useCompanyNews(
+  symbol: string | undefined,
+  pageSize = 9,
+): NewsFeedState {
+  return useNewsFeed(
+    (page, signal) => fetchCompanyNews(symbol ?? '', page, pageSize, signal),
+    [symbol, pageSize],
+    Boolean(symbol),
+  )
+}
+
+export function useMarketNews(
+  category: string,
+  pageSize = 9,
+): NewsFeedState {
+  return useNewsFeed(
+    (page, signal) => fetchMarketNews(category, page, pageSize, signal),
+    [category, pageSize],
   )
 }

@@ -6,15 +6,22 @@ import { isAppError, ProviderPlanRestrictedError } from './lib/errors.js'
 import { rateLimit } from './lib/rateLimit.js'
 import { createAuthRouter } from './routes/auth.js'
 import { createHealthRouter } from './routes/health.js'
+import { createNewsRouter } from './routes/news.js'
 import { createStocksRouter } from './routes/stocks.js'
 import { createWatchlistRouter } from './routes/watchlist.js'
 import { AuthService } from './services/authService.js'
-import { createMarketDataService, type MarketDataService } from './services/index.js'
+import {
+  createMarketDataService,
+  createNewsService,
+  type MarketDataService,
+  type NewsService,
+} from './services/index.js'
 import { WatchlistService } from './services/watchlistService.js'
 
 export interface CreateAppOptions {
   config?: AppConfig
   service?: MarketDataService
+  newsService?: NewsService
   /** Inject a database (tests use an in-memory instance); otherwise one is opened. */
   database?: DatabaseConnection
 }
@@ -39,6 +46,7 @@ const SAFE_PROVIDER_MESSAGES: Record<string, string> = {
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const config = options.config ?? loadConfig()
   const service = options.service ?? createMarketDataService(config)
+  const newsService = options.newsService ?? createNewsService(config)
   const database = options.database ?? openDatabase({ databasePath: config.databasePath })
   const authService = new AuthService(database, {
     sessionTtlSeconds: config.sessionTtlSeconds,
@@ -57,6 +65,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.use('/api/auth', rateLimit(AUTH_RATE_LIMIT))
   app.use('/api/health', createHealthRouter(service))
   app.use('/api/stocks', createStocksRouter(service))
+  app.use('/api/news', createNewsRouter(newsService))
   app.use('/api/auth', createAuthRouter(authService, config))
   app.use('/api/watchlist', createWatchlistRouter(watchlistService, authService, config))
 

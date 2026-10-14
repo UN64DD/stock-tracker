@@ -189,6 +189,108 @@ watchlist anymore.
 5. Restart the API server — data is still present in the SQLite file. Delete that
    file to start over.
 
+## News and sentiment (Phase 6)
+
+Company and general market news are served by a **dedicated news provider**,
+separate from the price provider, and scored by a transparent local sentiment
+heuristic.
+
+### Provider and why Finnhub
+
+The price data uses Twelve Data, but Twelve Data has **no general news
+endpoint** — only `/press_releases` (official company press releases on the
+Basic plan, requiring a `symbol`/`figi`/`isin`/`cusip`, capped at 10, with no
+source, URL, or summary). That is not enough for a news feed, so Phase 6 adds a
+second provider:
+
+- **`GET /company-news?symbol=AAPL&from=YYYY-MM-DD&to=YYYY-MM-DD`** — company
+  news (free tier covers the last 12 months plus new updates; North American
+  companies).
+- **`GET /news?category=general|forex|crypto|merger`** — general market news
+  (free tier).
+
+Both return `category, datetime` (Unix seconds), `headline, id, image, related,
+source, summary, url`. The free tier allows **60 requests/minute**. Finnhub's
+`/news-sentiment` endpoint is **premium**, so sentiment is computed locally
+instead (see below).
+
+**License:** the Finnhub free tier is for **personal/non-commercial use**. Keep
+this in mind before deploying publicly.
+
+### Configuration
+
+News is **optional**. With no `FINNHUB_API_KEY` the API returns `503
+not_configured` and the UI shows a friendly setup panel instead of an error.
+Add the key to `server/.env` to enable it.
+
+| Variable                    | Default   | Purpose                                    |
+| --------------------------- | --------- | ------------------------------------------ |
+| `FINNHUB_API_KEY`           | —         | Enables live news when set                 |
+| `NEWS_DATA_PROVIDER`        | `finnhub` | News provider implementation               |
+| `NEWS_CREDITS_PER_MINUTE`   | `60`      | Server-side news throttle                  |
+| `NEWS_CREDITS_PER_DAY`      | `1000`    | Server-side news daily budget              |
+| `NEWS_PAGE_SIZE`            | `12`      | Default articles per page (max 50)         |
+| `CACHE_TTL_NEWS_SECONDS`    | `600`     | News feed cache TTL (10 minutes)           |
+
+### API endpoints
+
+Both routes use the standard `{ data, meta }` envelope and set `X-Data-Cache`.
+`data` is a `NewsFeed`:
+
+```ts
+{
+  scope: 'company' | 'market'
+  symbol: string | null
+  category: string | null
+  page: number
+  pageSize: number
+  total: number          // articles available after de-duplication
+  hasMore: boolean
+  articles: NewsArticle[]
+  sentiment: SentimentSummary   // aggregate over the full set, not just the page
+}
+```
+
+| Method & path                                   | Description                                  |
+| ----------------------------------------------- | -------------------------------------------- |
+| `GET /api/news?symbol=AAPL&page=&pageSize=`     | Company news for one symbol (`symbol` required) |
+| `GET /api/news/market?category=&page=&pageSize=`| Market news; `category` is `general`/`forex`/`crypto`/`merger` |
+
+Each `NewsArticle` is `{ id, headline, summary, source, url, publishedAt (ISO),
+tickers[], category, thumbnail, sentiment, sentimentScore }`. Missing values are
+`null` — headlines, URLs, and dates are never invented. Duplicate ids and URLs
+are dropped when the feed is assembled.
+
+When `FINNHUB_API_KEY` is unset, both routes respond `503` with code
+`not_configured`.
+
+### Sentiment methodology
+
+Sentiment is a **transparent lexicon heuristic**, not an ML/AI model and not a
+price prediction:
+
+- A fixed finance lexicon of positive and negative terms is matched in the
+  headline (weighted ×2) and summary (×1), with a short-range (3-token)
+  negation flip.
+- The per-article score is `(positive − negative) / matched terms`, clamped to
+  `[-1, 1]`; labels are `positive`/`negative`/`neutral` at a `±0.2` threshold.
+- The feed summary returns positive/neutral/negative counts and the mean score.
+  With **fewer than 3 articles** the label is `insufficient` and `score` is
+  `null` — a small sample is not presented as a signal.
+
+Scores are computed **server-side** (consistent and cacheable) and the lexicon
+is never shipped to the browser. The `SentimentService` is intentionally small
+and replaceable.
+
+### Why there is no `news` table
+
+Phase 5 persists watchlists in SQLite, but news is **not** stored. Articles are
+already cached in memory with a 10-minute TTL, mirroring the price-data
+architecture; persisting them would add storage and staleness handling without
+improving correctness, and the app never needs news history. No migration is
+required. A transient provider failure serves the stale cached list (marked
+`stale`), and errors are never cached as data.
+
 ## Market data API (Phase 3–4)
 
 ### Provider and why Twelve Data
@@ -242,6 +344,11 @@ Browser ──/api/*──▶ Vite dev proxy ──▶ Express ──▶ Twelve 
 | `AUTH_COOKIE_NAME`             | `st_session`            | Name of the session cookie                |
 | `COOKIE_SECURE`                | `false`                 | Set `true` when serving over HTTPS in production |
 
+News-specific variables (`FINNHUB_API_KEY`, `NEWS_DATA_PROVIDER`,
+`NEWS_CREDITS_*`, `NEWS_PAGE_SIZE`, `CACHE_TTL_NEWS_SECONDS`) are documented in
+[News and sentiment (Phase 6)](#news-and-sentiment-phase-6). News is optional and
+degraded gracefully when `FINNHUB_API_KEY` is unset.
+
 ### API endpoints
 
 All `/api/stocks/*` responses use an envelope:
@@ -259,6 +366,8 @@ of `hit`, `stale`, or `miss`.
 | `GET /api/stocks/:symbol/history?range=` | Candles for `1D`/`1W`/`1M`/`3M`/`6M`/`1Y`/`5Y` (cached) |
 | `GET /api/stocks/:symbol/profile`      | Company profile; degraded when plan-restricted    |
 | `GET /api/stocks/:symbol/financials`   | Financial overview: live metrics + reported fundamentals; degraded when plan-restricted |
+| `GET /api/news?symbol=AAPL`            | Company news (optional Finnhub provider; see Phase 6) |
+| `GET /api/news/market?category=general`| General market news (`general`/`forex`/`crypto`/`merger`) |
 | `POST /api/auth/register`             | Create an account and start a session             |
 | `POST /api/auth/login`                | Sign in and start a session                       |
 | `POST /api/auth/logout`               | End the current session                           |
@@ -268,9 +377,9 @@ of `hit`, `stale`, or `miss`.
 | `DELETE /api/watchlist/items/:symbol` | Remove a symbol from the user's watchlist         |
 
 The server caches responses (quotes 60s, history/search 5m, profile/financials
-24h) and serves stale cached data when the provider is temporarily unavailable.
-Provider error text is never echoed to clients, so credentials cannot leak in
-error bodies.
+24h, news 10m) and serves stale cached data when the provider is temporarily
+unavailable. Provider error text is never echoed to clients, so credentials
+cannot leak in error bodies.
 
 The auth/watchlist routes are **not** market-data envelopes: `GET /api/watchlist`
 returns `{ data: { items, count } }`, and `POST /api/watchlist/items` returns
@@ -369,7 +478,11 @@ isolation (one user never sees another's items), duplicate-add idempotency, and
 removal. Provider-level tests stub the global `fetch` to verify Twelve Data
 response normalization (sorting/de-duplication, dropping invalid observations,
 the `statistics` mapping, and plan-restricted 403 handling) without any network
-access.
+access. News tests cover provider normalization (Unix→ms, ticker splitting,
+dropping invalid rows, key as a header, error mapping), sentiment analysis
+(lexicon polarity, negation, headline weighting, insufficient-sample handling),
+and the news routes (de-duplication, pagination, caching, not-configured `503`,
+uncached failures, stale-on-transient, and no secret leakage).
 
 ### Frontend tests
 
@@ -383,9 +496,11 @@ Deterministic Vitest unit tests for the pure helpers:
 divide-by-zero), range classification, timestamp formatting, currency-aware
 price/percentage/compact formatting, and the watchlist join/sort helpers
 (`mergeWatchlist` keeping quote-less items, sort order including
-missing-quotes-last and tie-breaking, and freshness formatting). Component
-rendering and responsive layout have no automated coverage in this project and
-are verified manually (see [Testing the interface](#testing-the-interface)).
+missing-quotes-last and tie-breaking, and freshness formatting). It also covers
+the news helpers (`mergeNewsArticles` ordering and de-duplication by id/URL, and
+`filterNewsArticles` search/sentiment filtering) and `formatRelativeToNow`.
+Component rendering and responsive layout have no automated coverage in this
+project and are verified manually (see [Testing the interface](#testing-the-interface)).
 
 ## Features (Phase 1)
 
@@ -400,13 +515,13 @@ are verified manually (see [Testing the interface](#testing-the-interface)).
 
 | Route             | Page            | Highlights |
 | ----------------- | --------------- | ---------- |
-| `/`               | Dashboard       | Market summary cards (mock), **live watchlist quote preview** (sign-in prompt when signed out), interactive mock market chart, mock top gainers/losers, latest mock news. |
+| `/`               | Dashboard       | Market summary cards (mock), **live watchlist quote preview** (sign-in prompt when signed out), interactive mock market chart, mock top gainers/losers, **live market news + sentiment summary**. |
 | `/stocks`         | Explore Stocks  | **Live symbol search** with debounced queries, sortable table, popular-symbol fallback, loading/error/empty states. |
-| `/stocks/:symbol` | Stock Details   | **Live price, change, interactive history chart (1D–5Y, line/area, period statistics and tooltips)**, financial overview (live vs reported, degraded on free tier), company summary, mock related news, watchlist toggle. |
+| `/stocks/:symbol` | Stock Details   | **Live price, change, interactive history chart (1D–5Y, line/area, period statistics and tooltips)**, financial overview (live vs reported, degraded on free tier), company summary, **live company news + sentiment**, watchlist toggle. |
 | `/watchlist`      | Watchlist       | **Account-backed** saved symbols (requires sign-in): live quotes, gainers/losers summary, sortable columns, in-list search, remove with confirmation, missing-quote handling. |
 | `/login`          | Sign in / Up    | Register or sign in; redirects back to the page you came from. |
 | `/alerts`         | Price Alerts    | Create alerts (validated), enable/disable, delete with confirmation. |
-| `/news`           | Market News     | Category and sentiment filters, search, article detail dialog. |
+| `/news`           | Market News     | **Live general market headlines** by category (`general`/`forex`/`crypto`/`merger`), sentiment summary, search + sentiment filters, load-more pagination, article detail dialog with source link. |
 | `/settings`       | Settings        | Local profile, theme, notification preferences, reset demo data. |
 | `/admin`          | Admin Dashboard | Mock stats, recent activity, stock metadata management, news entry management. |
 | `*`               | Not Found       | Helpful 404 page. |
@@ -427,13 +542,12 @@ are verified manually (see [Testing the interface](#testing-the-interface)).
 ## Mock data
 
 The following parts of the app are still driven by deterministic mock data (the
-same values render on every reload). Live prices/search/history come from the API
-proxy described above; everything else here is illustrative.
+same values render on every reload):
 
 - `stocks.ts` — ~30 mock stocks with fundamentals.
 - `indices.ts` — S&P 500, NASDAQ, Dow Jones, Russell 2000.
 - `history.ts` — a seeded (mulberry32) historical-series generator plus `DEMO_NOW`, so the dashboard's mock chart is stable and reproducible per symbol/range. The canonical chart range list and the live-chart math live in `src/lib/chart.ts`.
-- `news.ts` — fictional, clearly labelled news articles.
+- `news.ts` — fictional news articles used **only** by the admin demo's news manager. The Market News page and the news sections on the dashboard and stock details pages fetch live headlines instead.
 - `alerts.ts` — example demo alerts and condition labels.
 - `admin.ts` — mock admin activity, demo profile, and notifications.
 
@@ -468,8 +582,15 @@ demo data**, which does not affect your server-saved watchlist.
   password reset, account deletion, or OAuth. Sessions are long-lived cookies
   (7 days) and there is no cross-device session management UI.
 - Price alerts remain browser `localStorage` and are not tied to an account.
-- Only search, quotes, price history, and (limited) profiles are live. Market
-  indices, top movers, news, alerts, and admin data are still mock.
+- Only search, quotes, price history, profiles, and news are live. Market
+  indices, top movers, alerts, and admin data are still mock.
+- News depends on an optional Finnhub key; without it the news pages show a
+  setup notice. On the free tier, company news is limited to the last 12 months
+  and North American companies, and the provider is for **personal,
+  non-commercial use**.
+- Sentiment is a coarse lexicon heuristic derived from headline/summary wording.
+  It is **not** an ML model, not investment advice, and not a price prediction;
+  feeds with fewer than 3 articles report `insufficient`.
 - Reported company fundamentals (market cap, P/E, EPS, dividend yield, revenue)
   require a paid Twelve Data plan (`/statistics` is Pro+, `/profile` is Grow+)
   and are shown as `—` with an explanation on the free tier. The server does not
@@ -479,7 +600,9 @@ demo data**, which does not affect your server-saved watchlist.
   intraday depth beyond a session, and no paid-only intervals are used).
 - Free-tier rate limits (8/min, 800/day) can produce occasional `429` responses.
 - No background jobs; price alerts are never monitored and no emails are sent.
-- News headlines, sources, and links are fictional; external article links are disabled placeholders.
+- The **Market News** page and the news sections on the dashboard and stock
+  details pages are live; the admin dashboard's news manager remains a fictional
+  in-browser demo (`localStorage`).
 - The admin dashboard is an openly accessible visual prototype with **no authorization**.
 - Passwords are stored only as salted `scrypt` hashes; they are never stored or
   logged in plaintext, and session tokens are persisted only as SHA-256 hashes.

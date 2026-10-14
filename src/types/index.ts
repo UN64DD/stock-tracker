@@ -51,17 +51,49 @@ export type NewsCategory =
   | 'Economy'
   | 'Company'
 
+/** Feed selection supported by `GET /api/news/market?category=…`. */
+export type MarketNewsCategory = 'general' | 'forex' | 'crypto' | 'merger'
+
+/**
+ * A normalized article as returned by the API. Mirrors the server's
+ * `NewsArticleDto`: missing values are `null` rather than invented text.
+ */
 export interface NewsArticle {
   id: string
   headline: string
+  summary: string | null
   source: string
+  url: string | null
+  /** ISO-8601 timestamp. */
   publishedAt: string
-  ticker?: string
-  company?: string
+  tickers: string[]
+  /** Provider category label (e.g. "general", "company news"). */
+  category: string
+  thumbnail: string | null
   sentiment: Sentiment
-  category: NewsCategory
-  summary: string
-  hasExternalLink: boolean
+  /** Lexicon score in [-1, 1]; not a price prediction. */
+  sentimentScore: number
+}
+
+export interface SentimentSummary {
+  label: Sentiment | 'insufficient'
+  score: number | null
+  positive: number
+  neutral: number
+  negative: number
+  articleCount: number
+}
+
+export interface NewsFeed {
+  scope: 'company' | 'market'
+  symbol: string | null
+  category: string | null
+  page: number
+  pageSize: number
+  total: number
+  hasMore: boolean
+  articles: NewsArticle[]
+  sentiment: SentimentSummary
 }
 
 export type AlertCondition =

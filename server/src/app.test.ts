@@ -149,13 +149,17 @@ const testConfig: AppConfig = {
   stockApiKey: SECRET,
   providerCreditsPerMinute: 10_000,
   providerCreditsPerDay: 100_000,
+  newsProvider: 'finnhub',
+  newsCreditsPerMinute: 10_000,
+  newsCreditsPerDay: 100_000,
+  newsPageSize: 12,
   requestTimeoutMs: 1000,
   corsOrigin: '*',
   databasePath: ':memory:',
   sessionTtlSeconds: 86_400,
   authCookieName: 'st_session',
   cookieSecure: false,
-  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000 },
+  cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000, news: 1000 },
 }
 
 function buildApp(provider = new FakeProvider()) {

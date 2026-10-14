@@ -14,21 +14,18 @@ import { StockChart } from '@/components/common/StockChart'
 import { StockRow } from '@/components/common/StockRow'
 import { NewsCard } from '@/components/common/NewsCard'
 import { NewsDetailDialog } from '@/components/common/NewsDetailDialog'
+import { SentimentSummaryCard } from '@/components/common/SentimentSummaryCard'
 import { EmptyState } from '@/components/common/EmptyState'
 import { LoadingState } from '@/components/common/LoadingState'
 import { PriceChange } from '@/components/common/PriceChange'
-import { useQuotes } from '@/hooks/useMarketData'
+import { useMarketNews, useQuotes } from '@/hooks/useMarketData'
 import { toStockView } from '@/lib/liveStock'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { marketIndices } from '@/mocks/indices'
 import { generateHistory } from '@/mocks/history'
-import { newsArticles } from '@/mocks/news'
-import {
-  getTopGainers,
-  getTopLosers,
-  sortNewsByDate,
-} from '@/lib/stocks'
+import { getTopGainers, getTopLosers } from '@/lib/stocks'
+import { describeNewsError } from '@/lib/news'
 import { formatNumber, formatCurrency } from '@/lib/format'
 import { useWatchlist } from '@/contexts/watchlist-context'
 import { cn } from '@/lib/utils'
@@ -84,7 +81,8 @@ export function DashboardPage() {
 
   const gainers = getTopGainers(5)
   const losers = getTopLosers(5)
-  const latestNews = sortNewsByDate(newsArticles).slice(0, 4)
+  const newsFeed = useMarketNews('general', 4)
+  const latestNews = newsFeed.articles.slice(0, 4)
 
   const previewWatchlist = useMemo(() => {
     const quotes = watchlistQuotes.data?.quotes ?? {}
@@ -102,8 +100,8 @@ export function DashboardPage() {
     <div className="space-y-6">
       <PageHeader
         title="Market Overview"
-        description="Major indices and news are mock data; your watchlist shows live quotes."
-        badge={<DemoBadge label="Indices/news mock · watchlist live" />}
+        description="Index values and top movers are mock data; your watchlist and market news are live."
+        badge={<DemoBadge label="Indices mock · watchlist & news live" />}
         actions={
           <Link to="/stocks" className={cn(buttonVariants({ variant: 'outline' }))}>
             Explore stocks
@@ -246,7 +244,7 @@ export function DashboardPage() {
               Market news
             </h2>
             <p className="text-sm text-muted-foreground">
-              Illustrative headlines for layout testing only.
+              Live general headlines with a heuristic sentiment reading.
             </p>
           </div>
           <Link
@@ -256,15 +254,34 @@ export function DashboardPage() {
             All news
           </Link>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {latestNews.map((article) => (
-            <NewsCard
-              key={article.id}
-              article={article}
-              onSelect={setSelectedArticle}
-            />
-          ))}
-        </div>
+
+        {newsFeed.sentiment && latestNews.length > 0 ? (
+          <SentimentSummaryCard summary={newsFeed.sentiment} />
+        ) : null}
+
+        {newsFeed.loading && latestNews.length === 0 ? (
+          <LoadingState variant="rows" label="Loading market news…" />
+        ) : newsFeed.error && latestNews.length === 0 ? (
+          <EmptyState
+            title={describeNewsError(newsFeed.error).title}
+            description={describeNewsError(newsFeed.error).description}
+          />
+        ) : latestNews.length === 0 ? (
+          <EmptyState
+            title="No market news right now"
+            description="The news provider returned no articles. Try again shortly."
+          />
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {latestNews.map((article) => (
+              <NewsCard
+                key={article.id}
+                article={article}
+                onSelect={setSelectedArticle}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       <NewsDetailDialog
@@ -275,8 +292,8 @@ export function DashboardPage() {
       />
 
       <p className="text-xs text-muted-foreground">
-        Note: Index values, top movers, and news are illustrative mock data.
-        Watchlist quotes are fetched live from the market data provider.
+        Note: Index values and top movers are illustrative mock data. Watchlist
+        quotes and market news are fetched live from the API server.
       </p>
     </div>
   )

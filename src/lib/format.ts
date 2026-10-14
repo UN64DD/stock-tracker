@@ -87,7 +87,16 @@ export function formatDateTime(iso: string): string {
 }
 
 export function formatRelativeTime(iso: string): string {
-  const diffMs = DEMO_NOW - new Date(iso).getTime()
+  return formatRelativeToNow(iso, DEMO_NOW)
+}
+
+/**
+ * Formats an ISO timestamp relative to a real "now" (defaults to the current
+ * clock). Use this for live data — `formatRelativeTime` is anchored to the
+ * fixed demo clock and is only appropriate for mock data.
+ */
+export function formatRelativeToNow(iso: string, now: number = Date.now()): string {
+  const diffMs = now - new Date(iso).getTime()
   const minutes = Math.max(0, Math.round(diffMs / 60_000))
   if (minutes < 1) return 'just now'
   if (minutes < 60) return `${minutes}m ago`

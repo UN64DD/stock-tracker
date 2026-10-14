@@ -8,6 +8,7 @@ export interface CacheTtlConfig {
   search: number
   profile: number
   financials: number
+  news: number
 }
 
 export interface AppConfig {
@@ -16,6 +17,16 @@ export interface AppConfig {
   stockApiKey?: string
   providerCreditsPerMinute: number
   providerCreditsPerDay: number
+  /**
+   * Dedicated news provider. Kept separate from the price provider because
+   * Twelve Data exposes no general news endpoint; Finnhub does on its free tier.
+   */
+  newsProvider: string
+  newsApiKey?: string
+  newsCreditsPerMinute: number
+  newsCreditsPerDay: number
+  /** Page size used when serving paginated news feeds. */
+  newsPageSize: number
   requestTimeoutMs: number
   corsOrigin: string
   cacheTtl: CacheTtlConfig
@@ -34,6 +45,10 @@ function readInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
+function readBoundedInt(value: string | undefined, fallback: number, max: number): number {
+  return Math.min(readInt(value, fallback), max)
+}
+
 function readString(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim()
   return trimmed ? trimmed : fallback
@@ -46,6 +61,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     stockApiKey: env.STOCK_API_KEY?.trim() || undefined,
     providerCreditsPerMinute: readInt(env.PROVIDER_CREDITS_PER_MINUTE, 8),
     providerCreditsPerDay: readInt(env.PROVIDER_CREDITS_PER_DAY, 800),
+    newsProvider: readString(env.NEWS_DATA_PROVIDER, 'finnhub').toLowerCase(),
+    newsApiKey: env.FINNHUB_API_KEY?.trim() || undefined,
+    newsCreditsPerMinute: readInt(env.NEWS_CREDITS_PER_MINUTE, 60),
+    newsCreditsPerDay: readInt(env.NEWS_CREDITS_PER_DAY, 1000),
+    newsPageSize: readBoundedInt(env.NEWS_PAGE_SIZE, 12, 50),
     requestTimeoutMs: readInt(env.REQUEST_TIMEOUT_MS, 8000),
     corsOrigin: readString(env.CORS_ORIGIN, 'http://localhost:5173'),
     databasePath: readString(env.DATABASE_PATH, './data/stock-tracker.sqlite'),
@@ -58,6 +78,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       search: readInt(env.CACHE_TTL_SEARCH_SECONDS, 300) * 1000,
       profile: readInt(env.CACHE_TTL_PROFILE_SECONDS, 86_400) * 1000,
       financials: readInt(env.CACHE_TTL_FINANCIALS_SECONDS, 86_400) * 1000,
+      news: readInt(env.CACHE_TTL_NEWS_SECONDS, 600) * 1000,
     },
   }
 }

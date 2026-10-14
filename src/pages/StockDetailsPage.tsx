@@ -16,8 +16,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { buttonVariants } from '@/components/ui/button-variants'
-import { getNewsForSymbol } from '@/lib/stocks'
+import { SentimentSummaryCard } from '@/components/common/SentimentSummaryCard'
 import { isApiError } from '@/lib/api'
+import { describeNewsError, isNewsConfiguredError } from '@/lib/news'
 import { toStockView, UNAVAILABLE } from '@/lib/liveStock'
 import { computePeriodStats } from '@/lib/chart'
 import {
@@ -29,6 +30,7 @@ import {
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
+  useCompanyNews,
   useFinancials,
   useHistory,
   useProfile,
@@ -99,6 +101,7 @@ export function StockDetailsPage() {
   const profileState = useProfile(normalized || undefined)
   const historyState = useHistory(normalized || undefined, range)
   const financialsState = useFinancials(normalized || undefined)
+  const newsFeed = useCompanyNews(normalized || undefined)
 
   const chartData = useMemo(
     () => historyState.data?.points ?? [],
@@ -111,6 +114,7 @@ export function StockDetailsPage() {
     profileState.reload()
     historyState.reload()
     financialsState.reload()
+    newsFeed.reload()
   }
 
   if (quoteState.loading && !quoteState.data) {
@@ -153,7 +157,6 @@ export function StockDetailsPage() {
   const profile = profileState.data
   const financials = financialsState.data
   const stock = toStockView(quote, profile)
-  const relatedNews = getNewsForSymbol(stock.symbol)
 
   const currency = financials?.currency ?? quote.currency ?? profile?.currency ?? 'USD'
 
@@ -541,31 +544,80 @@ export function StockDetailsPage() {
       </Card>
 
       <section className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">
-            Recent related news
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Illustrative headlines associated with {stock.symbol}.
-          </p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">
+              Recent company news
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Live headlines related to {stock.symbol}, sourced from the news
+              provider.
+            </p>
+          </div>
+          {newsFeed.meta ? (
+            <LiveBadge
+              status={newsFeed.meta.dataStatus}
+              cached={newsFeed.meta.cached}
+              stale={newsFeed.meta.stale}
+            />
+          ) : null}
         </div>
-        {relatedNews.length === 0 ? (
+
+        {newsFeed.sentiment && newsFeed.articles.length > 0 ? (
+          <SentimentSummaryCard summary={newsFeed.sentiment} />
+        ) : null}
+
+        {newsFeed.loading && newsFeed.articles.length === 0 ? (
+          <LoadingState variant="rows" label="Loading related news…" />
+        ) : newsFeed.error && newsFeed.articles.length === 0 ? (
+          isNewsConfiguredError(newsFeed.error) ? (
+            <EmptyState
+              icon={Newspaper}
+              title={describeNewsError(newsFeed.error).title}
+              description={describeNewsError(newsFeed.error).description}
+              className="py-10"
+            />
+          ) : (
+            <ErrorState
+              {...describeNewsError(newsFeed.error)}
+              action={
+                <Button type="button" variant="outline" onClick={newsFeed.reload}>
+                  Try again
+                </Button>
+              }
+            />
+          )
+        ) : newsFeed.articles.length === 0 ? (
           <EmptyState
             icon={Newspaper}
-            title="No demo news for this symbol"
-            description="This prototype only includes a small set of illustrative articles. Browse the Market News page for more."
+            title="No recent news for this symbol"
+            description="The news provider returned no articles for this symbol. Free-tier coverage focuses on North American companies."
             className="py-10"
           />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {relatedNews.map((article) => (
-              <NewsCard
-                key={article.id}
-                article={article}
-                onSelect={setSelectedArticle}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {newsFeed.articles.map((article) => (
+                <NewsCard
+                  key={article.id}
+                  article={article}
+                  onSelect={setSelectedArticle}
+                />
+              ))}
+            </div>
+            {newsFeed.hasMore ? (
+              <div className="flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={newsFeed.loadMore}
+                  disabled={newsFeed.loadingMore}
+                >
+                  {newsFeed.loadingMore ? 'Loading…' : 'Load more'}
+                </Button>
+              </div>
+            ) : null}
+          </>
         )}
       </section>
 

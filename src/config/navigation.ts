@@ -47,7 +47,7 @@ export const primaryNav: NavItem[] = [
     title: 'Market News',
     to: '/news',
     icon: Newspaper,
-    description: 'Illustrative headlines',
+    description: 'Live headlines',
   },
   {
     title: 'Settings',

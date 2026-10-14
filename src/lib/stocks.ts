@@ -1,6 +1,5 @@
-import { newsArticles } from '@/mocks/news'
 import { stocks } from '@/mocks/stocks'
-import type { NewsArticle, Stock } from '@/types'
+import type { Stock } from '@/types'
 
 export function getStockBySymbol(symbol: string): Stock | undefined {
   return stocks.find(
@@ -63,17 +62,4 @@ export function getStocksBySymbols(symbols: string[]): Stock[] {
   return symbols
     .map((symbol) => getStockBySymbol(symbol))
     .filter((stock): stock is Stock => Boolean(stock))
-}
-
-export function getNewsForSymbol(symbol: string): NewsArticle[] {
-  return newsArticles.filter(
-    (article) => article.ticker?.toLowerCase() === symbol.toLowerCase(),
-  )
-}
-
-export function sortNewsByDate(list: NewsArticle[]): NewsArticle[] {
-  return [...list].sort(
-    (a, b) =>
-      new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
-  )
 }

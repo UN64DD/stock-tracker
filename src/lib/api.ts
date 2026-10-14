@@ -1,3 +1,5 @@
+import type { NewsFeed } from '@/types'
+
 export type DataStatus = 'real-time' | 'delayed' | 'end-of-day' | 'unknown'
 
 export interface ApiMeta {
@@ -294,6 +296,33 @@ export function fetchFinancials(
     `/api/stocks/${encodeURIComponent(symbol)}/financials`,
     signal,
   )
+}
+
+export function fetchCompanyNews(
+  symbol: string,
+  page = 1,
+  pageSize = 12,
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<NewsFeed>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  })
+  return apiFetch<NewsFeed>(
+    `/api/news?symbol=${encodeURIComponent(symbol)}&${params.toString()}`,
+    signal,
+  )
+}
+
+export function fetchMarketNews(
+  category: string,
+  page = 1,
+  pageSize = 12,
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<NewsFeed>> {
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+  if (category) params.set('category', category)
+  return apiFetch<NewsFeed>(`/api/news/market?${params.toString()}`, signal)
 }
 
 export function fetchHealth(signal?: AbortSignal): Promise<ProviderHealth> {

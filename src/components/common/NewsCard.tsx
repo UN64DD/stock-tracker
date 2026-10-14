@@ -1,7 +1,7 @@
 import { Clock, Newspaper } from 'lucide-react'
 import type { NewsArticle } from '@/types'
 import { cn } from '@/lib/utils'
-import { formatRelativeTime } from '@/lib/format'
+import { formatRelativeToNow } from '@/lib/format'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { SentimentBadge } from './SentimentBadge'
@@ -37,27 +37,37 @@ export function NewsCard({ article, onSelect, className }: NewsCardProps) {
         className,
       )}
     >
+      {article.thumbnail ? (
+        <img
+          src={article.thumbnail}
+          alt=""
+          loading="lazy"
+          className="h-36 w-full rounded-lg object-cover"
+        />
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <SentimentBadge sentiment={article.sentiment} />
-        <Badge variant="secondary" className="font-normal">
+        <Badge variant="secondary" className="font-normal capitalize">
           {article.category}
         </Badge>
-        {article.ticker ? (
-          <Badge variant="outline">{article.ticker}</Badge>
-        ) : null}
+        {article.tickers.slice(0, 2).map((ticker) => (
+          <Badge key={ticker} variant="outline">
+            {ticker}
+          </Badge>
+        ))}
       </div>
       <h3 className="text-sm font-semibold leading-snug text-foreground">
         {article.headline}
       </h3>
-      <p className="line-clamp-3 text-sm text-muted-foreground">
-        {article.summary}
-      </p>
+      {article.summary ? (
+        <p className="line-clamp-3 text-sm text-muted-foreground">{article.summary}</p>
+      ) : null}
       <div className="mt-auto flex items-center gap-2 text-xs text-muted-foreground">
         <Newspaper className="size-3.5" aria-hidden="true" />
-        <span className="font-medium text-foreground/80">{article.source}</span>
+        <span className="truncate font-medium text-foreground/80">{article.source}</span>
         <span aria-hidden="true">·</span>
         <Clock className="size-3.5" aria-hidden="true" />
-        <span>{formatRelativeTime(article.publishedAt)}</span>
+        <span>{formatRelativeToNow(article.publishedAt)}</span>
       </div>
     </Card>
   )

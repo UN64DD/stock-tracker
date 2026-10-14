@@ -43,7 +43,7 @@ import { adminActivities } from '@/mocks/admin'
 import { newsArticles, newsCategories, newsSources } from '@/mocks/news'
 import { stocks } from '@/mocks/stocks'
 import { formatRelativeTime } from '@/lib/format'
-import type { NewsCategory, Sentiment } from '@/types'
+import type { Sentiment } from '@/types'
 
 interface ManagedStock {
   symbol: string
@@ -55,7 +55,7 @@ interface ManagedNews {
   id: string
   headline: string
   source: string
-  category: NewsCategory
+  category: string
   sentiment: Sentiment
 }
 
@@ -492,7 +492,7 @@ export function AdminDashboardPage() {
                     onChange={(event) =>
                       setEditingNews({
                         ...editingNews,
-                        category: event.target.value as NewsCategory,
+                        category: event.target.value,
                       })
                     }
                   >
