@@ -43,3 +43,9 @@ coverage
 
 # Local files
 *.local
+
+# Local SQLite database (users, sessions, watchlists)
+server/data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

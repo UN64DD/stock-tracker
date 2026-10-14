@@ -1,18 +1,26 @@
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { loadConfig, type AppConfig } from './config.js'
+import { openDatabase, type DatabaseConnection } from './db/database.js'
 import { isAppError, ProviderPlanRestrictedError } from './lib/errors.js'
 import { rateLimit } from './lib/rateLimit.js'
+import { createAuthRouter } from './routes/auth.js'
 import { createHealthRouter } from './routes/health.js'
 import { createStocksRouter } from './routes/stocks.js'
+import { createWatchlistRouter } from './routes/watchlist.js'
+import { AuthService } from './services/authService.js'
 import { createMarketDataService, type MarketDataService } from './services/index.js'
+import { WatchlistService } from './services/watchlistService.js'
 
 export interface CreateAppOptions {
   config?: AppConfig
   service?: MarketDataService
+  /** Inject a database (tests use an in-memory instance); otherwise one is opened. */
+  database?: DatabaseConnection
 }
 
 const PUBLIC_RATE_LIMIT = { windowMs: 60_000, max: 120 }
+const AUTH_RATE_LIMIT = { windowMs: 60_000, max: 30 }
 
 /**
  * Provider-sourced error text is never echoed to clients verbatim, so that a
@@ -31,15 +39,26 @@ const SAFE_PROVIDER_MESSAGES: Record<string, string> = {
 export function createApp(options: CreateAppOptions = {}): express.Express {
   const config = options.config ?? loadConfig()
   const service = options.service ?? createMarketDataService(config)
+  const database = options.database ?? openDatabase({ databasePath: config.databasePath })
+  const authService = new AuthService(database, {
+    sessionTtlSeconds: config.sessionTtlSeconds,
+  })
+  const watchlistService = new WatchlistService(database)
 
   const app = express()
   app.disable('x-powered-by')
-  app.use(cors({ origin: config.corsOrigin }))
+  // `credentials` allows the HttpOnly session cookie to flow on same-origin and
+  // explicitly-allowed cross-origin requests. Configure CORS_ORIGIN precisely
+  // when the API is served from a different origin than the app.
+  app.use(cors({ origin: config.corsOrigin, credentials: true }))
   app.use(express.json())
 
   app.use('/api', rateLimit(PUBLIC_RATE_LIMIT))
+  app.use('/api/auth', rateLimit(AUTH_RATE_LIMIT))
   app.use('/api/health', createHealthRouter(service))
   app.use('/api/stocks', createStocksRouter(service))
+  app.use('/api/auth', createAuthRouter(authService, config))
+  app.use('/api/watchlist', createWatchlistRouter(watchlistService, authService, config))
 
   app.use('/api', (_req, res) => {
     res.status(404).json({

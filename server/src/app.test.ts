@@ -151,6 +151,10 @@ const testConfig: AppConfig = {
   providerCreditsPerDay: 100_000,
   requestTimeoutMs: 1000,
   corsOrigin: '*',
+  databasePath: ':memory:',
+  sessionTtlSeconds: 86_400,
+  authCookieName: 'st_session',
+  cookieSecure: false,
   cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000 },
 }
 

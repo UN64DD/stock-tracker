@@ -294,8 +294,8 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent className="flex flex-col gap-3 pt-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            Reset your watchlist, alerts, preferences, and admin demo edits back
-            to the defaults.
+            Reset alerts, preferences, and admin demo edits back to the defaults.
+            Your account watchlist lives on the server and is not affected.
           </p>
           <Button variant="outline" onClick={() => setResetOpen(true)}>
             <RefreshCw aria-hidden="true" />
@@ -308,7 +308,7 @@ export function SettingsPage() {
         open={resetOpen}
         onOpenChange={setResetOpen}
         title="Reset all demo data?"
-        description="This clears saved watchlist, alerts, preferences, and edits from this browser. The page will reload with defaults."
+        description="This clears alerts, preferences, and admin edits from this browser. Your server-saved watchlist is kept. The page will reload with defaults."
         confirmLabel="Reset and reload"
         destructive
         onConfirm={resetDemoData}

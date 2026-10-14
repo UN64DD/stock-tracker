@@ -31,6 +31,21 @@ export class NotFoundError extends AppError {
   }
 }
 
+export class UnauthorizedError extends AppError {
+  constructor(
+    message = 'You must be signed in to do that.',
+    code = 'unauthorized',
+  ) {
+    super(401, code, message)
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(message = 'That resource already exists.') {
+    super(409, 'conflict', message)
+  }
+}
+
 export class ProviderError extends AppError {
   constructor(
     message = 'The market data provider returned an error.',

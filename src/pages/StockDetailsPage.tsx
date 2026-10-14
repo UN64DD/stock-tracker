@@ -187,7 +187,13 @@ export function StockDetailsPage() {
         }
         actions={
           <>
-            <WatchlistButton symbol={stock.symbol} showLabel />
+            <WatchlistButton
+              symbol={stock.symbol}
+              name={stock.name}
+              currency={quote.currency}
+              exchange={quote.exchange}
+              showLabel
+            />
             <Link
               to="/alerts"
               className={cn(buttonVariants({ variant: 'outline' }))}

@@ -160,7 +160,7 @@ export function StockTable({
             </TableCell>
             <TableCell>
               <div className="flex items-center justify-end gap-1">
-                <WatchlistButton symbol={stock.symbol} size="icon-sm" />
+                <WatchlistButton symbol={stock.symbol} name={stock.name} size="icon-sm" />
                 <Link
                   to={`/stocks/${stock.symbol}`}
                   aria-label={`View ${stock.symbol} details`}

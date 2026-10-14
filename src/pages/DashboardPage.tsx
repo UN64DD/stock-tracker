@@ -72,7 +72,7 @@ export function DashboardPage() {
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(
     null,
   )
-  const { symbols } = useWatchlist()
+  const { symbols, isAuthenticated, loading: watchlistLoading } = useWatchlist()
   const previewSymbols = useMemo(() => symbols.slice(0, 5), [symbols])
   const watchlistQuotes = useQuotes(previewSymbols)
 
@@ -169,7 +169,20 @@ export function DashboardPage() {
             </Link>
           </CardHeader>
           <CardContent className="space-y-1 pt-3">
-            {watchlistQuotes.loading && previewWatchlist.length === 0 ? (
+            {!isAuthenticated ? (
+              <EmptyState
+                title="Sign in to save a watchlist"
+                description="Your watchlist is stored on your account so it follows you across devices."
+                className="py-10"
+                action={
+                  <Link to="/login" className={cn(buttonVariants({ size: 'sm' }))}>
+                    Sign in
+                  </Link>
+                }
+              />
+            ) : watchlistLoading && previewSymbols.length === 0 ? (
+              <LoadingState variant="rows" label="Loading your watchlist…" />
+            ) : watchlistQuotes.loading && previewWatchlist.length === 0 ? (
               <LoadingState variant="rows" label="Loading watchlist quotes…" />
             ) : watchlistQuotes.error && previewWatchlist.length === 0 ? (
               <EmptyState
@@ -182,16 +195,23 @@ export function DashboardPage() {
                 title="No saved stocks"
                 description="Add symbols from a stock details page to see them here."
                 className="py-10"
+                action={
+                  <Link to="/stocks" className={cn(buttonVariants({ size: 'sm' }))}>
+                    Explore stocks
+                  </Link>
+                }
               />
             ) : (
               previewWatchlist.map((stock) => (
                 <StockRow key={stock.symbol} stock={stock} />
               ))
             )}
-            <p className="pt-2 text-xs text-muted-foreground">
-              Live quotes for {previewWatchlist.length} of {symbols.length} saved
-              symbol{symbols.length === 1 ? '' : 's'}.
-            </p>
+            {isAuthenticated && symbols.length > 0 ? (
+              <p className="pt-2 text-xs text-muted-foreground">
+                Live quotes for {previewWatchlist.length} of {symbols.length} saved
+                symbol{symbols.length === 1 ? '' : 's'}.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </section>

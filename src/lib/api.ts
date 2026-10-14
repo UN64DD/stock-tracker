@@ -139,15 +139,27 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
+interface ApiRequestOptions {
+  method?: string
+  body?: unknown
+  signal?: AbortSignal
+}
+
 async function apiRequest<T>(
   path: string,
-  signal?: AbortSignal,
+  { method = 'GET', body, signal }: ApiRequestOptions = {},
 ): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${API_BASE}${path}`, {
+      method,
       signal,
-      headers: { Accept: 'application/json' },
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     })
   } catch (error) {
     if (isAbortError(error)) throw error
@@ -158,13 +170,13 @@ async function apiRequest<T>(
     )
   }
 
-  const body = (await response.json().catch(() => null)) as
+  const responseBody = (await response.json().catch(() => null)) as
     | { error?: { code?: string; message?: string; details?: unknown } }
     | T
     | null
 
   if (!response.ok) {
-    const errorBody = body as
+    const errorBody = responseBody as
       | { error?: { code?: string; message?: string; details?: unknown } }
       | null
     throw new ApiError(
@@ -175,11 +187,25 @@ async function apiRequest<T>(
     )
   }
 
-  return body as T
+  return responseBody as T
 }
 
 async function apiFetch<T>(path: string, signal?: AbortSignal): Promise<ApiEnvelope<T>> {
-  return apiRequest<ApiEnvelope<T>>(path, signal)
+  return apiRequest<ApiEnvelope<T>>(path, { signal })
+}
+
+const MAX_BATCH_SYMBOLS = 8
+
+function uniqueSymbols(symbols: string[]): string[] {
+  return Array.from(new Set(symbols.map((symbol) => symbol.toUpperCase())))
+}
+
+async function fetchQuotesChunk(
+  symbols: string[],
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<BatchQuotes>> {
+  const params = new URLSearchParams({ symbols: symbols.join(',') })
+  return apiFetch<BatchQuotes>(`/api/stocks/quotes?${params.toString()}`, signal)
 }
 
 export function searchSymbols(
@@ -195,12 +221,47 @@ export function fetchQuote(symbol: string, signal?: AbortSignal): Promise<ApiEnv
   return apiFetch<Quote>(`/api/stocks/${encodeURIComponent(symbol)}/quote`, signal)
 }
 
-export function fetchQuotes(
+/**
+ * Fetches quotes for any number of symbols, batching into provider-friendly
+ * groups of eight (the server's max) and merging the results. Requests run
+ * sequentially so a large watchlist does not burst the provider rate limit.
+ */
+export async function fetchQuotes(
   symbols: string[],
   signal?: AbortSignal,
 ): Promise<ApiEnvelope<BatchQuotes>> {
-  const params = new URLSearchParams({ symbols: symbols.join(',') })
-  return apiFetch<BatchQuotes>(`/api/stocks/quotes?${params.toString()}`, signal)
+  const unique = uniqueSymbols(symbols)
+  if (unique.length === 0) {
+    return {
+      data: { quotes: {}, missing: [] },
+      meta: emptyMeta(),
+    }
+  }
+
+  const quotes: Record<string, Quote> = {}
+  const missing: string[] = []
+  let meta: ApiMeta | null = null
+
+  for (let index = 0; index < unique.length; index += MAX_BATCH_SYMBOLS) {
+    const chunk = unique.slice(index, index + MAX_BATCH_SYMBOLS)
+    const envelope = await fetchQuotesChunk(chunk, signal)
+    Object.assign(quotes, envelope.data.quotes)
+    missing.push(...envelope.data.missing)
+    meta = envelope.meta
+  }
+
+  return { data: { quotes, missing }, meta: meta ?? emptyMeta() }
+}
+
+function emptyMeta(): ApiMeta {
+  return {
+    provider: 'unknown',
+    cached: false,
+    stale: false,
+    fetchedAt: new Date().toISOString(),
+    dataStatus: 'unknown',
+    dataStatusNote: '',
+  }
 }
 
 export function fetchHistory(
@@ -236,5 +297,99 @@ export function fetchFinancials(
 }
 
 export function fetchHealth(signal?: AbortSignal): Promise<ProviderHealth> {
-  return apiRequest<ProviderHealth>('/api/health', signal)
+  return apiRequest<ProviderHealth>('/api/health', { signal })
+}
+
+export interface AuthUser {
+  id: string
+  email: string
+  displayName: string | null
+  createdAt: string
+}
+
+interface UserPayload {
+  data: { user: AuthUser }
+}
+
+export async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser> {
+  const body = await apiRequest<UserPayload>('/api/auth/me', { signal })
+  return body.data.user
+}
+
+export async function loginUser(
+  email: string,
+  password: string,
+  signal?: AbortSignal,
+): Promise<AuthUser> {
+  const body = await apiRequest<UserPayload>('/api/auth/login', {
+    method: 'POST',
+    body: { email, password },
+    signal,
+  })
+  return body.data.user
+}
+
+export async function registerUser(
+  input: { email: string; password: string; displayName?: string },
+  signal?: AbortSignal,
+): Promise<AuthUser> {
+  const body = await apiRequest<UserPayload>('/api/auth/register', {
+    method: 'POST',
+    body: input,
+    signal,
+  })
+  return body.data.user
+}
+
+export async function logoutUser(signal?: AbortSignal): Promise<void> {
+  await apiRequest<null>('/api/auth/logout', { method: 'POST', signal })
+}
+
+export interface WatchlistItem {
+  id: string
+  symbol: string
+  name: string | null
+  currency: string | null
+  exchange: string | null
+  addedAt: string
+}
+
+export interface WatchlistPayload {
+  data: { items: WatchlistItem[]; count: number }
+}
+
+export function fetchWatchlist(signal?: AbortSignal): Promise<WatchlistPayload> {
+  return apiRequest<WatchlistPayload>('/api/watchlist', { signal })
+}
+
+export interface AddWatchlistItemInput {
+  symbol: string
+  name?: string | null
+  currency?: string | null
+  exchange?: string | null
+}
+
+export interface AddWatchlistItemResult {
+  data: { item: WatchlistItem; created: boolean }
+}
+
+export function addWatchlistItem(
+  input: AddWatchlistItemInput,
+  signal?: AbortSignal,
+): Promise<AddWatchlistItemResult> {
+  return apiRequest<AddWatchlistItemResult>('/api/watchlist/items', {
+    method: 'POST',
+    body: input,
+    signal,
+  })
+}
+
+export async function removeWatchlistItem(
+  symbol: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiRequest<null>(`/api/watchlist/items/${encodeURIComponent(symbol)}`, {
+    method: 'DELETE',
+    signal,
+  })
 }

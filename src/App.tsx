@@ -1,8 +1,10 @@
 import { lazy, useEffect } from 'react'
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { DashboardLayout } from '@/layouts/DashboardLayout'
+import { RequireAuth } from '@/components/common/RequireAuth'
 import { ThemeProvider } from '@/contexts/ThemeProvider'
 import { ToastProvider } from '@/contexts/ToastProvider'
+import { AuthProvider } from '@/contexts/AuthProvider'
 import { WatchlistProvider } from '@/contexts/WatchlistProvider'
 import { AlertsProvider } from '@/contexts/AlertsProvider'
 
@@ -46,6 +48,11 @@ const AdminDashboardPage = lazy(() =>
     default: module.AdminDashboardPage,
   })),
 )
+const LoginPage = lazy(() =>
+  import('@/pages/LoginPage').then((module) => ({
+    default: module.LoginPage,
+  })),
+)
 const NotFoundPage = lazy(() =>
   import('@/pages/NotFoundPage').then((module) => ({
     default: module.NotFoundPage,
@@ -64,26 +71,36 @@ function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <WatchlistProvider>
-          <AlertsProvider>
-            <BrowserRouter>
-              <ScrollToTop />
-              <Routes>
-                <Route element={<DashboardLayout />}>
-                  <Route index element={<DashboardPage />} />
-                  <Route path="stocks" element={<ExploreStocksPage />} />
-                  <Route path="stocks/:symbol" element={<StockDetailsPage />} />
-                  <Route path="watchlist" element={<WatchlistPage />} />
-                  <Route path="alerts" element={<PriceAlertsPage />} />
-                  <Route path="news" element={<MarketNewsPage />} />
-                  <Route path="settings" element={<SettingsPage />} />
-                  <Route path="admin" element={<AdminDashboardPage />} />
-                  <Route path="*" element={<NotFoundPage />} />
-                </Route>
-              </Routes>
-            </BrowserRouter>
-          </AlertsProvider>
-        </WatchlistProvider>
+        <AuthProvider>
+          <WatchlistProvider>
+            <AlertsProvider>
+              <BrowserRouter>
+                <ScrollToTop />
+                <Routes>
+                  <Route path="login" element={<LoginPage />} />
+                  <Route element={<DashboardLayout />}>
+                    <Route index element={<DashboardPage />} />
+                    <Route path="stocks" element={<ExploreStocksPage />} />
+                    <Route path="stocks/:symbol" element={<StockDetailsPage />} />
+                    <Route
+                      path="watchlist"
+                      element={
+                        <RequireAuth>
+                          <WatchlistPage />
+                        </RequireAuth>
+                      }
+                    />
+                    <Route path="alerts" element={<PriceAlertsPage />} />
+                    <Route path="news" element={<MarketNewsPage />} />
+                    <Route path="settings" element={<SettingsPage />} />
+                    <Route path="admin" element={<AdminDashboardPage />} />
+                    <Route path="*" element={<NotFoundPage />} />
+                  </Route>
+                </Routes>
+              </BrowserRouter>
+            </AlertsProvider>
+          </WatchlistProvider>
+        </AuthProvider>
       </ToastProvider>
     </ThemeProvider>
   )

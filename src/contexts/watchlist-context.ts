@@ -1,13 +1,22 @@
 import { createContext, useContext } from 'react'
-import type { Stock } from '@/types'
+import type { AddWatchlistItemInput, WatchlistItem } from '@/lib/api'
 
 export interface WatchlistContextValue {
+  /** Server-persisted items for the signed-in user (empty when signed out). */
+  items: WatchlistItem[]
   symbols: string[]
-  stocks: Stock[]
-  addToWatchlist: (symbol: string) => void
-  removeFromWatchlist: (symbol: string) => void
-  toggleWatchlist: (symbol: string) => void
+  count: number
+  loading: boolean
+  error: unknown
+  isAuthenticated: boolean
+  /** Symbols with an in-flight add/remove request. */
+  pendingSymbols: string[]
   isInWatchlist: (symbol: string) => boolean
+  /** Rejects with an `ApiError` on failure so callers can surface a message. */
+  addToWatchlist: (input: AddWatchlistItemInput) => Promise<void>
+  removeFromWatchlist: (symbol: string) => Promise<void>
+  toggleWatchlist: (input: AddWatchlistItemInput) => Promise<void>
+  refresh: () => Promise<void>
 }
 
 export const WatchlistContext = createContext<WatchlistContextValue | null>(null)

@@ -1,95 +1,130 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChartLine, Star, Trash } from 'lucide-react'
+import { ChartLine, RefreshCw, Star, Trash } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DemoBadge } from '@/components/common/DemoBadge'
 import { SearchInput } from '@/components/common/SearchInput'
-import { StockTable } from '@/components/common/StockTable'
+import { WatchlistTable } from '@/components/common/WatchlistTable'
 import { EmptyState } from '@/components/common/EmptyState'
+import { LoadingState } from '@/components/common/LoadingState'
 import { ConfirmationDialog } from '@/components/common/ConfirmationDialog'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { buttonVariants } from '@/components/ui/button-variants'
 import { useWatchlist } from '@/contexts/watchlist-context'
 import { useToast } from '@/contexts/toast-context'
+import { useQuotes } from '@/hooks/useMarketData'
+import { isApiError } from '@/lib/api'
+import {
+  mergeWatchlist,
+  sortWatchlistRows,
+  type SortDirection,
+  type WatchlistSortKey,
+} from '@/lib/watchlist'
 import { cn } from '@/lib/utils'
 
+function messageFor(error: unknown): string {
+  if (isApiError(error)) return error.message
+  if (error instanceof Error) return error.message
+  return 'Please try again.'
+}
+
 export function WatchlistPage() {
-  const { stocks, removeFromWatchlist } = useWatchlist()
+  const { items, symbols, count, loading, error, removeFromWatchlist, refresh, pendingSymbols } =
+    useWatchlist()
   const { toast } = useToast()
+  const quotesState = useQuotes(symbols)
+
   const [query, setQuery] = useState('')
+  const [sortKey, setSortKey] = useState<WatchlistSortKey>('symbol')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [pendingSymbol, setPendingSymbol] = useState<string | null>(null)
 
-  const results = useMemo(() => {
+  const rows = useMemo(
+    () => mergeWatchlist(items, quotesState.data?.quotes ?? {}),
+    [items, quotesState.data],
+  )
+
+  const filteredRows = useMemo(() => {
     const term = query.trim().toLowerCase()
-    if (!term) return stocks
-    return stocks.filter(
-      (stock) =>
-        stock.symbol.toLowerCase().includes(term) ||
-        stock.name.toLowerCase().includes(term),
-    )
-  }, [stocks, query])
+    const matching = term
+      ? rows.filter(
+          (row) =>
+            row.symbol.toLowerCase().includes(term) ||
+            row.name.toLowerCase().includes(term),
+        )
+      : rows
+    return sortWatchlistRows(matching, sortKey, sortDirection)
+  }, [rows, query, sortKey, sortDirection])
 
-  const gainers = stocks.filter((stock) => stock.changePercent > 0).length
-  const losers = stocks.filter((stock) => stock.changePercent < 0).length
+  const gainers = rows.filter((row) => (row.quote?.changePercent ?? 0) > 0).length
+  const losers = rows.filter((row) => (row.quote?.changePercent ?? 0) < 0).length
+  const unavailable = rows.filter((row) => !row.quote).length
 
-  const confirmRemove = () => {
+  const handleSortChange = (key: WatchlistSortKey) => {
+    if (key === sortKey) {
+      setSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortKey(key)
+    setSortDirection(key === 'symbol' || key === 'name' ? 'asc' : 'desc')
+  }
+
+  const handleRefresh = () => {
+    void refresh()
+    quotesState.reload()
+  }
+
+  const confirmRemove = async () => {
     if (!pendingSymbol) return
-    removeFromWatchlist(pendingSymbol)
-    toast({
-      title: `${pendingSymbol} removed`,
-      description: 'Updated in this browser’s demo storage.',
-      variant: 'default',
-    })
+    const symbol = pendingSymbol
     setPendingSymbol(null)
+    try {
+      await removeFromWatchlist(symbol)
+      toast({ title: `${symbol} removed`, description: 'Removed from your saved watchlist.' })
+    } catch (removeError) {
+      toast({
+        title: `Could not remove ${symbol}`,
+        description: messageFor(removeError),
+        variant: 'error',
+      })
+    }
   }
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="My Watchlist"
-        description="Saved mock symbols. Stored in this browser via localStorage — not real multi-user persistence."
-        badge={<DemoBadge label={`${stocks.length} saved`} />}
+        description="Saved to your account server-side — available on any device you sign in from."
+        badge={<DemoBadge label={`${count} saved`} />}
         actions={
-          <Link to="/stocks" className={cn(buttonVariants())}>
-            Add stocks
-          </Link>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleRefresh} disabled={loading}>
+              <RefreshCw className={cn(loading && 'animate-spin')} aria-hidden="true" />
+              Refresh
+            </Button>
+            <Link to="/stocks" className={cn(buttonVariants())}>
+              Add stocks
+            </Link>
+          </div>
         }
       />
 
-      {stocks.length > 0 ? (
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Card className="p-4">
-            <p className="text-xs font-medium text-muted-foreground">
-              Tracked symbols
-            </p>
-            <p className="mt-1 text-xl font-semibold tabular-nums text-foreground">
-              {stocks.length}
-            </p>
-          </Card>
-          <Card className="p-4">
-            <p className="text-xs font-medium text-muted-foreground">
-              Gaining today
-            </p>
-            <p className="mt-1 text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-              {gainers}
-            </p>
-          </Card>
-          <Card className="p-4">
-            <p className="text-xs font-medium text-muted-foreground">
-              Declining today
-            </p>
-            <p className="mt-1 text-xl font-semibold tabular-nums text-red-600 dark:text-red-400">
-              {losers}
-            </p>
-          </Card>
-        </div>
-      ) : null}
-
-      {stocks.length === 0 ? (
+      {error && items.length === 0 ? (
+        <EmptyState
+          title="Could not load your watchlist"
+          description={messageFor(error)}
+          action={
+            <Button onClick={() => void refresh()}>Try again</Button>
+          }
+        />
+      ) : loading && items.length === 0 ? (
+        <LoadingState variant="rows" label="Loading your watchlist…" />
+      ) : items.length === 0 ? (
         <EmptyState
           icon={Star}
           title="Your watchlist is empty"
-          description="Add symbols from any stock details page to track them here. Changes persist in this browser only."
+          description="Add symbols from Explore Stocks or any stock details page to track them here."
           action={
             <Link to="/stocks" className={cn(buttonVariants())}>
               Explore stocks
@@ -98,6 +133,37 @@ export function WatchlistPage() {
         />
       ) : (
         <>
+          <div className="grid gap-4 sm:grid-cols-4">
+            <Card className="p-4">
+              <p className="text-xs font-medium text-muted-foreground">Tracked symbols</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-foreground">{count}</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs font-medium text-muted-foreground">Gaining today</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                {gainers}
+              </p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs font-medium text-muted-foreground">Declining today</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-red-600 dark:text-red-400">
+                {losers}
+              </p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs font-medium text-muted-foreground">Quotes unavailable</p>
+              <p className="mt-1 text-xl font-semibold tabular-nums text-muted-foreground">
+                {unavailable}
+              </p>
+            </Card>
+          </div>
+
+          {quotesState.error ? (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+              Live quotes could not be loaded. Saved symbols are shown without prices.
+            </p>
+          ) : null}
+
           <Card className="p-4">
             <SearchInput
               value={query}
@@ -107,7 +173,7 @@ export function WatchlistPage() {
             />
           </Card>
 
-          {results.length === 0 ? (
+          {filteredRows.length === 0 ? (
             <EmptyState
               icon={ChartLine}
               title="No matching saved stocks"
@@ -115,7 +181,14 @@ export function WatchlistPage() {
             />
           ) : (
             <Card className="overflow-hidden">
-              <StockTable stocks={results} onRemove={setPendingSymbol} />
+              <WatchlistTable
+                rows={filteredRows}
+                sortKey={sortKey}
+                sortDirection={sortDirection}
+                onSortChange={handleSortChange}
+                onRemove={setPendingSymbol}
+                removingSymbols={pendingSymbols}
+              />
             </Card>
           )}
         </>
@@ -127,13 +200,13 @@ export function WatchlistPage() {
           if (!open) setPendingSymbol(null)
         }}
         title="Remove from watchlist?"
-        description={`${pendingSymbol ?? 'This symbol'} will be removed from your saved watchlist in this browser.`}
+        description={`${pendingSymbol ?? 'This symbol'} will be removed from your saved watchlist.`}
         confirmLabel="Remove"
         destructive
-        onConfirm={confirmRemove}
+        onConfirm={() => void confirmRemove()}
       />
 
-      {stocks.length > 0 ? (
+      {items.length > 0 ? (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Trash className="size-3.5" aria-hidden="true" />
           Removing a symbol is confirmed first to avoid accidental deletion.
