@@ -90,7 +90,14 @@ function App() {
                         </RequireAuth>
                       }
                     />
-                    <Route path="alerts" element={<PriceAlertsPage />} />
+                    <Route
+                      path="alerts"
+                      element={
+                        <RequireAuth>
+                          <PriceAlertsPage />
+                        </RequireAuth>
+                      }
+                    />
                     <Route path="news" element={<MarketNewsPage />} />
                     <Route path="settings" element={<SettingsPage />} />
                     <Route path="admin" element={<AdminDashboardPage />} />

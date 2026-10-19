@@ -102,13 +102,23 @@ export type AlertCondition =
   | 'percent_increase'
   | 'percent_decrease'
 
+export type AlertStatus = 'active' | 'triggered' | 'disabled'
+
 export interface PriceAlert {
   id: string
   symbol: string
+  name: string | null
   condition: AlertCondition
-  target: number
+  threshold: number
   enabled: boolean
+  status: AlertStatus
+  triggeredAt: string | null
+  lastCheckedAt: string | null
+  lastPrice: number | null
+  /** Reference price for percentage conditions (session open); null otherwise. */
+  baselinePrice: number | null
   createdAt: string
+  updatedAt: string
 }
 
 export type ActivityStatus = 'success' | 'pending' | 'failed'

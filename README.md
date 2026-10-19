@@ -2,11 +2,11 @@
 
 A modern stock market dashboard with interactive charts, persistent watchlists, price alerts, company news, and market insights.
 
-> **Status:** Phase 5 — persistent watchlists. Stock **search, quotes, price history (1D–5Y), company profiles, and a financial overview** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Watchlists are now **stored per account** in a SQLite database behind a minimal session-based auth system, so they survive reloads and follow you across browsers/devices. Reported fundamentals (P/E, EPS, dividend yield, revenue) require a paid plan and degrade to a clear unavailable state on the free tier. Market indices, news, alerts, and admin data remain deterministic **mock data**, and price alerts are still browser-`localStorage` only (no background jobs). See [Persistent watchlists (Phase 5)](#persistent-watchlists-phase-5) and [Market data API (Phase 3–4)](#market-data-api-phase-34).
+> **Status:** Phase 7 — stock price alerts. Stock **search, quotes, price history (1D–5Y), company profiles, and a financial overview** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Watchlists and **price alerts** are now **stored per account** in a SQLite database behind a minimal session-based auth system, so they survive reloads and follow you across browsers/devices. Reported fundamentals (P/E, EPS, dividend yield, revenue) require a paid plan and degrade to a clear unavailable state on the free tier. Market indices, top movers, and admin data remain deterministic **mock data**, and alerts are checked on demand (**Check now**) — there are no background jobs and no emails. See [Persistent watchlists (Phase 5)](#persistent-watchlists-phase-5), [News and sentiment (Phase 6)](#news-and-sentiment-phase-6), [Price alerts (Phase 7)](#price-alerts-phase-7), and [Market data API (Phase 3–4)](#market-data-api-phase-34).
 
 ## Overview
 
-Stock Tracker is a portfolio-quality application built incrementally. Phase 0 established the project foundation; Phase 1 delivered a complete, responsive dashboard UI; Phase 3 wired a real market data provider in through a server-side proxy; Phase 4 added an interactive price chart (1D–5Y, line/area, period statistics) and a company financial overview; Phase 5 adds **persistent, per-user watchlists** with a small SQLite-backed account/session system. The architecture is feature-oriented and keeps remaining mock data isolated so it can be replaced cleanly later.
+Stock Tracker is a portfolio-quality application built incrementally. Phase 0 established the project foundation; Phase 1 delivered a complete, responsive dashboard UI; Phase 3 wired a real market data provider in through a server-side proxy; Phase 4 added an interactive price chart (1D–5Y, line/area, period statistics) and a company financial overview; Phase 5 adds **persistent, per-user watchlists** with a small SQLite-backed account/session system; Phase 6 adds **live news and a transparent sentiment heuristic**; Phase 7 adds **persistent, per-user price alerts** with four condition types and on-demand evaluation. The architecture is feature-oriented and keeps remaining mock data isolated so it can be replaced cleanly later.
 
 ## Technology Stack
 
@@ -291,6 +291,74 @@ improving correctness, and the app never needs news history. No migration is
 required. A transient provider failure serves the stale cached list (marked
 `stale`), and errors are never cached as data.
 
+## Price alerts (Phase 7)
+
+Price alerts are **stored per account** in SQLite (the `price_alerts` table,
+migration `0002_price_alerts`) and served by `/api/alerts`. Each alert belongs
+to exactly one user and one symbol; condition and threshold are validated on
+both the server and the client.
+
+### Conditions
+
+| Condition          | Meaning                                  | Trigger           |
+| ------------------ | ---------------------------------------- | ----------------- |
+| `price_above`      | Latest price rises to or above the value | `price >= target` |
+| `price_below`      | Latest price falls to or below the value | `price <= target` |
+| `percent_increase` | Session change rises to or above         | `change >= +X%`   |
+| `percent_decrease` | Session change falls to or below         | `change <= -X%`   |
+
+Percentage conditions use the provider's **1D history**: the baseline is the
+session's first observation (typically the open) and the change is
+`(latest − baseline) / baseline × 100` computed from the last valid observation.
+Price targets must be positive; percentage targets are capped at `1000` in the
+UI and `1e9` on the server.
+
+### Status and evaluation
+
+Status is **derived**, not stored: `disabled` when the enabled switch is off,
+`triggered` once `triggered_at` is set, otherwise `active`. Changing the
+condition or threshold, or re-enabling a disabled alert, clears `triggered_at`
+so the alert is armed again.
+
+There are **no background jobs and no emails** (Phases 8–9 territory). Alerts
+are evaluated when you press **Check now** (`POST /api/alerts/evaluate`). Each
+check:
+
+1. loads the enabled, not-yet-triggered alerts for the signed-in user;
+2. asks the market-data service for a quote (price conditions) or a `1D`
+   history (percentage conditions), going through the same provider budget and
+   cache as the rest of the app;
+3. stamps `last_price`, `baseline_price`, and `last_checked_at`, and sets
+   `triggered_at` when the condition is met.
+
+A provider failure for one symbol skips just that alert; it never fails the
+whole batch. Ownership always comes from the session — a user id in the request
+body is ignored, and another user's alert returns `404` (no enumeration).
+
+### API endpoints
+
+| Method & path               | Description                                          |
+| --------------------------- | ---------------------------------------------------- |
+| `GET /api/alerts`           | The signed-in user's alerts (newest first)           |
+| `POST /api/alerts`          | Create an alert (`symbol`, `condition`, `threshold`)  |
+| `PATCH /api/alerts/:id`     | Update condition/threshold/enabled (re-arms)         |
+| `DELETE /api/alerts/:id`    | Delete an alert (`204 No Content`)                   |
+| `POST /api/alerts/evaluate` | Check enabled alerts now; returns the fresh list     |
+
+All routes require a session (`401` when signed out) and are capped at 200
+alerts per user. Routes mirror the watchlist pattern: `{ data, meta }` envelopes
+and `{ error: { code, message } }` errors.
+
+### Frontend
+
+`/alerts` (sign-in required) lists the account's alerts with status counts,
+status filter, symbol/company search, and **Check now**. Create/edit dialogs use
+`AlertForm` with a live symbol picker (`AlertSymbolPicker`, provider search with
+a local fallback); enabling/disabling is a switch and deletion requires
+confirmation. Pure helpers in `src/lib/alerts.ts` (condition labels,
+`describeAlertRule`, `filterAlerts`, `countAlertsByStatus`) keep the page thin
+and unit-testable (`tests/alerts.test.ts`).
+
 ## Market data API (Phase 3–4)
 
 ### Provider and why Twelve Data
@@ -375,6 +443,11 @@ of `hit`, `stale`, or `miss`.
 | `GET /api/watchlist`                  | The signed-in user's saved watchlist              |
 | `POST /api/watchlist/items`           | Add a symbol (idempotent per user)                |
 | `DELETE /api/watchlist/items/:symbol` | Remove a symbol from the user's watchlist         |
+| `GET /api/alerts`                     | The signed-in user's price alerts                 |
+| `POST /api/alerts`                    | Create a price alert                              |
+| `PATCH /api/alerts/:id`               | Update a price alert (re-arms when edited)        |
+| `DELETE /api/alerts/:id`              | Delete a price alert                              |
+| `POST /api/alerts/evaluate`           | Check enabled alerts against latest market data   |
 
 The server caches responses (quotes 60s, history/search 5m, profile/financials
 24h, news 10m) and serves stale cached data when the provider is temporarily
@@ -520,7 +593,7 @@ project and are verified manually (see [Testing the interface](#testing-the-inte
 | `/stocks/:symbol` | Stock Details   | **Live price, change, interactive history chart (1D–5Y, line/area, period statistics and tooltips)**, financial overview (live vs reported, degraded on free tier), company summary, **live company news + sentiment**, watchlist toggle. |
 | `/watchlist`      | Watchlist       | **Account-backed** saved symbols (requires sign-in): live quotes, gainers/losers summary, sortable columns, in-list search, remove with confirmation, missing-quote handling. |
 | `/login`          | Sign in / Up    | Register or sign in; redirects back to the page you came from. |
-| `/alerts`         | Price Alerts    | Create alerts (validated), enable/disable, delete with confirmation. |
+| `/alerts`         | Price Alerts    | **Account-backed** alerts (requires sign-in): live symbol search, four condition types with validation, status counts/filters, on-demand **Check now**, enable/disable switch, delete with confirmation. |
 | `/news`           | Market News     | **Live general market headlines** by category (`general`/`forex`/`crypto`/`merger`), sentiment summary, search + sentiment filters, load-more pagination, article detail dialog with source link. |
 | `/settings`       | Settings        | Local profile, theme, notification preferences, reset demo data. |
 | `/admin`          | Admin Dashboard | Mock stats, recent activity, stock metadata management, news entry management. |
@@ -534,7 +607,7 @@ project and are verified manually (see [Testing the interface](#testing-the-inte
 - Selected-period statistics (open, close, high, low, percentage change) computed from the returned observations and clearly separated from the daily price change.
 - Live watchlist quote preview on the dashboard (and a sign-in prompt when signed out).
 - **Account-backed watchlist** add/remove with duplicate prevention and per-user isolation.
-- Alert create/toggle/delete with field validation.
+- Alert create/toggle/delete with field validation (server-backed, per account).
 - Toast notifications, empty states, loading states, error states.
 - Confirmation dialogs before destructive actions.
 - Consistent price/percentage formatting and accessible labels.
@@ -548,7 +621,6 @@ same values render on every reload):
 - `indices.ts` — S&P 500, NASDAQ, Dow Jones, Russell 2000.
 - `history.ts` — a seeded (mulberry32) historical-series generator plus `DEMO_NOW`, so the dashboard's mock chart is stable and reproducible per symbol/range. The canonical chart range list and the live-chart math live in `src/lib/chart.ts`.
 - `news.ts` — fictional news articles used **only** by the admin demo's news manager. The Market News page and the news sections on the dashboard and stock details pages fetch live headlines instead.
-- `alerts.ts` — example demo alerts and condition labels.
 - `admin.ts` — mock admin activity, demo profile, and notifications.
 
 Shared TypeScript types live in `src/types/index.ts`. Nothing in `src/mocks/` imports from components, so mock modules can be swapped for real API calls later.
@@ -562,16 +634,16 @@ multi-user — clearing site data or using another browser resets it:
 
 | Data                         | Storage key                     |
 | ---------------------------- | ------------------------------- |
-| Price alerts                 | `stock-tracker:alerts`          |
 | Theme preference             | `stock-tracker:theme`           |
 | Notification preferences     | `stock-tracker:preferences`     |
 | Admin-managed stock metadata | `stock-tracker:admin-stocks`    |
 | Admin-managed news entries   | `stock-tracker:admin-news`      |
 | Local settings profile       | `stock-tracker:profile`         |
 
-A legacy `stock-tracker:watchlist` key may still exist in browsers from earlier
-phases; it is no longer read and is cleared by **Settings → Demo data → Reset
-demo data**, which does not affect your server-saved watchlist.
+Legacy keys from earlier phases (`stock-tracker:watchlist`,
+`stock-tracker:alerts`) may still exist in browsers; they are no longer read and
+are cleared by **Settings → Demo data → Reset demo data**, which does not affect
+your server-saved watchlist or alerts.
 
 ## Limitations
 
@@ -583,7 +655,7 @@ demo data**, which does not affect your server-saved watchlist.
   (7 days) and there is no cross-device session management UI.
 - Price alerts remain browser `localStorage` and are not tied to an account.
 - Only search, quotes, price history, profiles, and news are live. Market
-  indices, top movers, alerts, and admin data are still mock.
+  indices, top movers, and admin data are still mock.
 - News depends on an optional Finnhub key; without it the news pages show a
   setup notice. On the free tier, company news is limited to the last 12 months
   and North American companies, and the provider is for **personal,
@@ -599,7 +671,8 @@ demo data**, which does not affect your server-saved watchlist.
 - Historical ranges are limited to `1D`–`5Y` (the provider supports no free
   intraday depth beyond a session, and no paid-only intervals are used).
 - Free-tier rate limits (8/min, 800/day) can produce occasional `429` responses.
-- No background jobs; price alerts are never monitored and no emails are sent.
+- No background jobs; price alerts are only evaluated when you press **Check
+  now**, and no emails are sent.
 - The **Market News** page and the news sections on the dashboard and stock
   details pages are live; the admin dashboard's news manager remains a fictional
   in-browser demo (`localStorage`).
@@ -635,7 +708,7 @@ demo data**, which does not affect your server-saved watchlist.
 10. Sign out and sign back in: your watchlist returns. Register a **second account**
     to confirm it starts empty (per-user isolation).
 11. On a signed-out browser, visiting `/watchlist` redirects to `/login`.
-12. On `/alerts`, create an alert (try a negative target to see validation), toggle it, and delete it. Refresh — changes persist.
+12. On `/alerts` (sign-out first to confirm the route redirects to `/login`), create an alert via live symbol search (try a negative target to see validation), toggle it off/on, press **Check now**, and delete it. Refresh — changes persist because they are saved on the server.
 13. On `/news`, filter by category/sentiment and open an article detail dialog.
 14. On `/settings`, switch the theme and change notification toggles, then refresh.
 15. On `/admin`, add/remove stock metadata and create/edit a news entry.
@@ -658,8 +731,8 @@ stock-tracker/
 │   │   ├── lib/            # cache, budget, rate limit, validation, cookies, errors
 │   │   ├── middleware/     # session/auth middleware (requireAuth)
 │   │   ├── providers/      # TwelveDataProvider + provider interface
-│   │   ├── routes/         # /api/health, /api/stocks/*, /api/auth/*, /api/watchlist
-│   │   ├── services/       # MarketDataService, AuthService, WatchlistService
+│   │   ├── routes/         # /api/health, /api/stocks/*, /api/auth/*, /api/watchlist, /api/alerts
+│   │   ├── services/       # MarketDataService, AuthService, WatchlistService, PriceAlertService
 │   │   ├── testing/        # in-memory app/db fakes for tests
 │   │   ├── types/          # Express request augmentation
 │   │   ├── app.ts          # Express app factory (test-injectable)
@@ -702,8 +775,8 @@ The `@/*` import alias points at `src/`.
 3. Stock search and stock data API ✅ *(Twelve Data via server-side Express proxy)*
 4. Interactive charts and company fundamentals ✅ *(live 1D–5Y line/area charts; reported fundamentals degrade to a clear unavailable state on the free provider plan)*
 5. Persistent watchlists ✅ *(per-account SQLite storage behind session-cookie auth)*
-6. News and market sentiment
-7. Price alerts
+6. News and market sentiment ✅ *(live Finnhub provider + local lexicon sentiment)*
+7. Price alerts ✅ *(per-account SQLite storage, four condition types, on-demand evaluation)*
 8. Email notifications
 9. Background workflows
 10. Admin dashboard

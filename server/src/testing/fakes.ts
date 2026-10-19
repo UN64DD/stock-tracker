@@ -91,7 +91,20 @@ class StubProvider implements StockProvider {
   }
 
   async getHistoricalPrices(symbol: string, range: ChartRange): Promise<HistoricalSeries | null> {
-    return { symbol, range, interval: '1day', currency: 'USD', exchange: 'NASDAQ', dataStatus: 'end-of-day', points: [] }
+    return {
+      symbol,
+      range,
+      interval: '1day',
+      currency: 'USD',
+      exchange: 'NASDAQ',
+      dataStatus: 'end-of-day',
+      // Deterministic session used by alert-evaluation tests: the baseline is
+      // 100 and the latest price is 150 (+50%).
+      points: [
+        { timestamp: 1_700_000_000_000, label: 'open', value: 100 },
+        { timestamp: 1_700_003_600_000, label: 'close', value: 150 },
+      ],
+    }
   }
 
   async getCompanyProfile(symbol: string): Promise<CompanyProfile | null> {

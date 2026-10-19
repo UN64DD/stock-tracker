@@ -1,4 +1,4 @@
-import type { NewsFeed } from '@/types'
+import type { AlertCondition, NewsFeed, PriceAlert } from '@/types'
 
 export type DataStatus = 'real-time' | 'delayed' | 'end-of-day' | 'unknown'
 
@@ -419,6 +419,71 @@ export async function removeWatchlistItem(
 ): Promise<void> {
   await apiRequest<null>(`/api/watchlist/items/${encodeURIComponent(symbol)}`, {
     method: 'DELETE',
+    signal,
+  })
+}
+
+export interface CreateAlertInput {
+  symbol: string
+  name?: string | null
+  currency?: string | null
+  exchange?: string | null
+  condition: AlertCondition
+  threshold: number
+  enabled?: boolean
+}
+
+export interface UpdateAlertInput {
+  condition?: AlertCondition
+  threshold?: number
+  enabled?: boolean
+}
+
+interface AlertsPayload {
+  data: { alerts: PriceAlert[]; count: number }
+}
+
+interface AlertPayload {
+  data: { alert: PriceAlert }
+}
+
+export function fetchAlerts(signal?: AbortSignal): Promise<AlertsPayload> {
+  return apiRequest<AlertsPayload>('/api/alerts', { signal })
+}
+
+export function createAlert(
+  input: CreateAlertInput,
+  signal?: AbortSignal,
+): Promise<AlertPayload> {
+  return apiRequest<AlertPayload>('/api/alerts', {
+    method: 'POST',
+    body: input,
+    signal,
+  })
+}
+
+export function updateAlert(
+  id: string,
+  changes: UpdateAlertInput,
+  signal?: AbortSignal,
+): Promise<AlertPayload> {
+  return apiRequest<AlertPayload>(`/api/alerts/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: changes,
+    signal,
+  })
+}
+
+export async function deleteAlert(id: string, signal?: AbortSignal): Promise<void> {
+  await apiRequest<null>(`/api/alerts/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal,
+  })
+}
+
+export function evaluateAlerts(signal?: AbortSignal): Promise<AlertsPayload> {
+  return apiRequest<AlertsPayload>('/api/alerts/evaluate', {
+    method: 'POST',
     signal,
   })
 }

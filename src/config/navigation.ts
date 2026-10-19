@@ -41,7 +41,7 @@ export const primaryNav: NavItem[] = [
     title: 'Price Alerts',
     to: '/alerts',
     icon: BellRing,
-    description: 'Demo alerts',
+    description: 'Saved price alerts',
   },
   {
     title: 'Market News',

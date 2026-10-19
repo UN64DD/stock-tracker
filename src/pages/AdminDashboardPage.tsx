@@ -204,7 +204,7 @@ export function AdminDashboardPage() {
           label="Active alerts"
           value={String(activeAlerts)}
           icon={BellRing}
-          footer="From your demo alerts"
+          footer="From your saved alerts"
         />
       </section>
 

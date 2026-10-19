@@ -4,11 +4,13 @@ import { loadConfig, type AppConfig } from './config.js'
 import { openDatabase, type DatabaseConnection } from './db/database.js'
 import { isAppError, ProviderPlanRestrictedError } from './lib/errors.js'
 import { rateLimit } from './lib/rateLimit.js'
+import { createAlertsRouter } from './routes/alerts.js'
 import { createAuthRouter } from './routes/auth.js'
 import { createHealthRouter } from './routes/health.js'
 import { createNewsRouter } from './routes/news.js'
 import { createStocksRouter } from './routes/stocks.js'
 import { createWatchlistRouter } from './routes/watchlist.js'
+import { AlertEvaluationService } from './services/alertEvaluationService.js'
 import { AuthService } from './services/authService.js'
 import {
   createMarketDataService,
@@ -16,6 +18,7 @@ import {
   type MarketDataService,
   type NewsService,
 } from './services/index.js'
+import { PriceAlertService } from './services/priceAlertService.js'
 import { WatchlistService } from './services/watchlistService.js'
 
 export interface CreateAppOptions {
@@ -52,6 +55,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     sessionTtlSeconds: config.sessionTtlSeconds,
   })
   const watchlistService = new WatchlistService(database)
+  const alertService = new PriceAlertService(
+    database,
+    new AlertEvaluationService(service),
+  )
 
   const app = express()
   app.disable('x-powered-by')
@@ -68,6 +75,7 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.use('/api/news', createNewsRouter(newsService))
   app.use('/api/auth', createAuthRouter(authService, config))
   app.use('/api/watchlist', createWatchlistRouter(watchlistService, authService, config))
+  app.use('/api/alerts', createAlertsRouter(alertService, authService, config))
 
   app.use('/api', (_req, res) => {
     res.status(404).json({

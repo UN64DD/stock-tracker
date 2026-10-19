@@ -1,30 +1,31 @@
 import { useState, type FormEvent } from 'react'
+import { AlertSymbolPicker, type AlertSymbolSelection } from '@/components/common/AlertSymbolPicker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { alertConditionLabels } from '@/mocks/alerts'
-import { stocks } from '@/mocks/stocks'
+import {
+  alertConditionLabels,
+  isPercentCondition,
+} from '@/lib/alerts'
 import { cn } from '@/lib/utils'
-import type { AlertCondition } from '@/types'
+import type { AlertCondition, PriceAlert } from '@/types'
 
-interface AlertFormValues {
-  symbol: string
+export interface AlertFormValues extends AlertSymbolSelection {
   condition: AlertCondition
-  target: number
+  threshold: number
   enabled: boolean
 }
 
 interface AlertFormProps {
-  onSubmit: (values: AlertFormValues) => void
+  onSubmit: (values: AlertFormValues) => void | Promise<void>
   onCancel: () => void
-  defaultSymbol?: string
+  /** When present, the form edits the alert: the symbol is locked. */
+  initial?: PriceAlert | null
+  submitLabel?: string
+  submitting?: boolean
 }
-
-const sortedStocks = [...stocks].sort((a, b) =>
-  a.symbol.localeCompare(b.symbol),
-)
 
 const conditionOptions: AlertCondition[] = [
   'price_above',
@@ -33,65 +34,102 @@ const conditionOptions: AlertCondition[] = [
   'percent_decrease',
 ]
 
+const MAX_PERCENT_THRESHOLD = 1000
+const MAX_PRICE_THRESHOLD = 1_000_000_000
+
 export function AlertForm({
   onSubmit,
   onCancel,
-  defaultSymbol,
+  initial,
+  submitLabel = 'Create alert',
+  submitting = false,
 }: AlertFormProps) {
-  const [symbol, setSymbol] = useState(defaultSymbol ?? sortedStocks[0].symbol)
-  const [condition, setCondition] = useState<AlertCondition>('price_above')
-  const [target, setTarget] = useState('')
-  const [enabled, setEnabled] = useState(true)
-  const [errors, setErrors] = useState<{ symbol?: string; target?: string }>({})
+  const isEditing = Boolean(initial)
+  const [selection, setSelection] = useState<AlertSymbolSelection | null>(
+    initial
+      ? {
+          symbol: initial.symbol,
+          name: initial.name,
+          currency: null,
+          exchange: null,
+        }
+      : null,
+  )
+  const [condition, setCondition] = useState<AlertCondition>(
+    initial?.condition ?? 'price_above',
+  )
+  const [threshold, setThreshold] = useState(
+    initial ? String(initial.threshold) : '',
+  )
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true)
+  const [errors, setErrors] = useState<{
+    symbol?: string
+    threshold?: string
+  }>({})
 
-  const isPercent =
-    condition === 'percent_increase' || condition === 'percent_decrease'
+  const isPercent = isPercentCondition(condition)
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
-    const nextErrors: { symbol?: string; target?: string } = {}
+    const nextErrors: { symbol?: string; threshold?: string } = {}
 
-    if (!symbol) {
+    if (!selection?.symbol) {
       nextErrors.symbol = 'Choose a stock symbol.'
     }
 
-    const numeric = Number(target)
-    if (target.trim() === '' || Number.isNaN(numeric)) {
-      nextErrors.target = 'Enter a numeric target value.'
+    const numeric = Number(threshold)
+    if (threshold.trim() === '' || Number.isNaN(numeric)) {
+      nextErrors.threshold = 'Enter a numeric target value.'
     } else if (numeric <= 0) {
-      nextErrors.target = 'Target must be greater than zero.'
-    } else if (isPercent && numeric > 1000) {
-      nextErrors.target = 'Percentage looks unrealistic for this demo.'
+      nextErrors.threshold = isPercent
+        ? 'Percentage must be greater than zero.'
+        : 'Price must be a positive value.'
+    } else if (isPercent && numeric > MAX_PERCENT_THRESHOLD) {
+      nextErrors.threshold = 'Percentage looks unrealistic (max 1000%).'
+    } else if (!isPercent && numeric > MAX_PRICE_THRESHOLD) {
+      nextErrors.threshold = 'Price looks unrealistically large.'
     }
 
-    if (Object.keys(nextErrors).length > 0) {
+    if (Object.keys(nextErrors).length > 0 || !selection) {
       setErrors(nextErrors)
       return
     }
 
-    onSubmit({ symbol, condition, target: numeric, enabled })
+    void onSubmit({
+      symbol: selection.symbol,
+      name: selection.name,
+      currency: selection.currency,
+      exchange: selection.exchange,
+      condition,
+      threshold: numeric,
+      enabled,
+    })
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="alert-symbol">Stock symbol</Label>
-        <Select
-          id="alert-symbol"
-          value={symbol}
-          onChange={(event) => {
-            setSymbol(event.target.value)
+        <Label htmlFor="alert-symbol-input">Stock symbol</Label>
+        <AlertSymbolPicker
+          value={selection}
+          onChange={(next) => {
+            setSelection(next)
             setErrors((previous) => ({ ...previous, symbol: undefined }))
           }}
-        >
-          {sortedStocks.map((stock) => (
-            <option key={stock.symbol} value={stock.symbol}>
-              {stock.symbol} — {stock.name}
-            </option>
-          ))}
-        </Select>
+          disabled={isEditing}
+          invalid={Boolean(errors.symbol)}
+          describedBy={errors.symbol ? 'alert-symbol-error' : undefined}
+        />
+        {isEditing ? (
+          <p className="text-xs text-muted-foreground">
+            The symbol of an alert cannot be changed. Create a new alert for a
+            different symbol.
+          </p>
+        ) : null}
         {errors.symbol ? (
-          <p className="text-xs text-destructive">{errors.symbol}</p>
+          <p id="alert-symbol-error" className="text-xs text-destructive">
+            {errors.symbol}
+          </p>
         ) : null}
       </div>
 
@@ -102,7 +140,7 @@ export function AlertForm({
           value={condition}
           onChange={(event) => {
             setCondition(event.target.value as AlertCondition)
-            setErrors((previous) => ({ ...previous, target: undefined }))
+            setErrors((previous) => ({ ...previous, threshold: undefined }))
           }}
         >
           {conditionOptions.map((option) => (
@@ -126,29 +164,35 @@ export function AlertForm({
             type="number"
             inputMode="decimal"
             step="0.01"
-            value={target}
+            min="0.01"
+            value={threshold}
             onChange={(event) => {
-              setTarget(event.target.value)
-              setErrors((previous) => ({ ...previous, target: undefined }))
+              setThreshold(event.target.value)
+              setErrors((previous) => ({ ...previous, threshold: undefined }))
             }}
             placeholder={isPercent ? '5.00' : '250.00'}
-            className={cn('pl-7', errors.target && 'border-destructive')}
-            aria-invalid={Boolean(errors.target)}
-            aria-describedby={errors.target ? 'alert-target-error' : undefined}
+            className={cn('pl-7', errors.threshold && 'border-destructive')}
+            aria-invalid={Boolean(errors.threshold)}
+            aria-describedby={errors.threshold ? 'alert-target-error' : undefined}
           />
         </div>
-        {errors.target ? (
+        {errors.threshold ? (
           <p id="alert-target-error" className="text-xs text-destructive">
-            {errors.target}
+            {errors.threshold}
           </p>
         ) : null}
+        <p className="text-xs text-muted-foreground">
+          {isPercent
+            ? 'Measured from the session open of the current trading day.'
+            : 'Compared with the latest available price.'}
+        </p>
       </div>
 
       <div className="flex items-center justify-between rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-medium text-foreground">Enabled</p>
           <p className="text-xs text-muted-foreground">
-            Demo alerts are never actually monitored.
+            Disabled alerts are skipped when checking.
           </p>
         </div>
         <Switch
@@ -159,13 +203,13 @@ export function AlertForm({
       </div>
 
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button type="button" variant="outline" onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
           Cancel
         </Button>
-        <Button type="submit">Create alert</Button>
+        <Button type="submit" disabled={submitting}>
+          {submitLabel}
+        </Button>
       </div>
     </form>
   )
 }
-
-export type { AlertFormValues }
