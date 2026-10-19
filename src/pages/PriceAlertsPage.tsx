@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom'
 import {
   BellRing,
   CheckCircle2,
+  Mail,
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   SearchX,
   Trash,
 } from 'lucide-react'
@@ -29,13 +31,14 @@ import {
   countAlertsByStatus,
   describeAlertRule,
   filterAlerts,
+  notificationStatusLabels,
   type AlertStatusFilter,
 } from '@/lib/alerts'
 import { isApiError } from '@/lib/api'
 import { formatDate, formatDateTime, formatCurrency } from '@/lib/format'
 import { accentForSymbol } from '@/lib/liveStock'
 import { cn } from '@/lib/utils'
-import type { AlertStatus, PriceAlert } from '@/types'
+import type { AlertNotification, AlertStatus, NotificationStatus, PriceAlert } from '@/types'
 
 function messageFor(error: unknown): string {
   if (isApiError(error)) return error.message
@@ -47,6 +50,16 @@ const statusVariant: Record<AlertStatus, 'positive' | 'warning' | 'neutral'> = {
   active: 'positive',
   triggered: 'warning',
   disabled: 'neutral',
+}
+
+const notificationStatusVariant: Record<
+  NotificationStatus,
+  'neutral' | 'info' | 'positive' | 'negative'
+> = {
+  pending: 'neutral',
+  accepted: 'info',
+  delivered: 'positive',
+  failed: 'negative',
 }
 
 const statusFilterOptions: Array<{ value: AlertStatusFilter; label: string }> = [
@@ -69,6 +82,14 @@ export function PriceAlertsPage() {
     setAlertEnabled,
     evaluateAlerts,
     refresh,
+    notifications,
+    notificationsLoading,
+    notificationsError,
+    pendingNotificationIds,
+    refreshNotifications,
+    resendNotification,
+    priceAlertEmails,
+    emailConfigured,
   } = useAlerts()
   const { toast } = useToast()
 
@@ -196,6 +217,23 @@ export function PriceAlertsPage() {
     }
   }
 
+  const handleResend = async (notification: AlertNotification) => {
+    try {
+      const updated = await resendNotification(notification.id)
+      toast({
+        title: 'Email resent',
+        description: `${updated.symbol} · ${notificationStatusLabels[updated.status]}`,
+        variant: 'success',
+      })
+    } catch (resendError) {
+      toast({
+        title: 'Could not resend email',
+        description: messageFor(resendError),
+        variant: 'error',
+      })
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -229,7 +267,10 @@ export function PriceAlertsPage() {
         <p>
           Alerts are evaluated when you press <strong>Check now</strong>.
           Percentage alerts compare the latest price with the session open of the
-          current trading day. No emails are sent.
+          current trading day.{' '}
+          {priceAlertEmails
+            ? 'When an alert triggers, an email is sent to your account address — you can turn that off in Settings.'
+            : 'Email notifications are turned off in your settings, so triggers are only recorded here.'}
         </p>
       </div>
 
@@ -431,6 +472,124 @@ export function PriceAlertsPage() {
           )}
         </>
       )}
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Mail className="size-4" aria-hidden="true" />
+              Email notifications
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              One email per trigger. &ldquo;Sent&rdquo; means the email provider
+              accepted the message; &ldquo;Delivered&rdquo; is confirmed by the
+              provider&apos;s webhook.
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Refresh notification history"
+            disabled={notificationsLoading}
+            onClick={() => void refreshNotifications()}
+          >
+            <RefreshCw
+              className={cn(notificationsLoading && 'animate-spin')}
+              aria-hidden="true"
+            />
+          </Button>
+        </div>
+
+        {!emailConfigured ? (
+          <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-300">
+            This server has no email provider configured (RESEND_API_KEY is
+            unset), so trigger emails cannot be sent. Attempts are still recorded
+            below with their failure reason.
+          </div>
+        ) : null}
+
+        {notificationsError ? (
+          <p className="mt-3 text-xs text-destructive">
+            {messageFor(notificationsError)}
+          </p>
+        ) : null}
+
+        {notificationsLoading && notifications.length === 0 ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Loading notification history…
+          </p>
+        ) : notifications.length === 0 ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            No emails yet — they appear here after an alert triggers.
+          </p>
+        ) : (
+          <ul className="mt-2 divide-y divide-border">
+            {notifications.map((notification) => {
+              const resendPending = pendingNotificationIds.includes(notification.id)
+              return (
+                <li
+                  key={notification.id}
+                  className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link
+                        to={`/stocks/${notification.symbol}`}
+                        className="text-sm font-semibold text-foreground underline-offset-4 hover:underline"
+                      >
+                        {notification.symbol}
+                      </Link>
+                      {notification.companyName ? (
+                        <span className="truncate text-xs text-muted-foreground">
+                          {notification.companyName}
+                        </span>
+                      ) : null}
+                      <Badge variant={notificationStatusVariant[notification.status]}>
+                        {notificationStatusLabels[notification.status]}
+                      </Badge>
+                      {notification.attempts > 1 ? (
+                        <span className="text-[0.7rem] text-muted-foreground">
+                          {notification.attempts} attempts
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
+                      {describeAlertRule(notification)} · triggered{' '}
+                      {formatDateTime(notification.triggeredAt)}
+                      {notification.triggerPrice !== null
+                        ? ` at ${formatCurrency(notification.triggerPrice)}`
+                        : ''}
+                    </p>
+                    <p className="mt-0.5 text-[0.7rem] text-muted-foreground">
+                      To {notification.recipientEmail}
+                      {notification.acceptedAt
+                        ? ` · accepted ${formatDateTime(notification.acceptedAt)}`
+                        : ''}
+                      {notification.deliveredAt
+                        ? ` · delivered ${formatDateTime(notification.deliveredAt)}`
+                        : ''}
+                      {notification.status === 'failed' && notification.errorMessage
+                        ? ` · ${notification.errorMessage}`
+                        : ''}
+                    </p>
+                  </div>
+                  {notification.status === 'failed' ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={resendPending}
+                      onClick={() => void handleResend(notification)}
+                    >
+                      <RotateCcw aria-hidden="true" />
+                      Retry
+                    </Button>
+                  ) : null}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </Card>
 
       <Dialog
         open={createOpen}

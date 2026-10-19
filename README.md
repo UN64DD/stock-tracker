@@ -2,7 +2,7 @@
 
 A modern stock market dashboard with interactive charts, persistent watchlists, price alerts, company news, and market insights.
 
-> **Status:** Phase 7 — stock price alerts. Stock **search, quotes, price history (1D–5Y), company profiles, and a financial overview** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Watchlists and **price alerts** are now **stored per account** in a SQLite database behind a minimal session-based auth system, so they survive reloads and follow you across browsers/devices. Reported fundamentals (P/E, EPS, dividend yield, revenue) require a paid plan and degrade to a clear unavailable state on the free tier. Market indices, top movers, and admin data remain deterministic **mock data**, and alerts are checked on demand (**Check now**) — there are no background jobs and no emails. See [Persistent watchlists (Phase 5)](#persistent-watchlists-phase-5), [News and sentiment (Phase 6)](#news-and-sentiment-phase-6), [Price alerts (Phase 7)](#price-alerts-phase-7), and [Market data API (Phase 3–4)](#market-data-api-phase-34).
+> **Status:** Phase 8 — email notifications for triggered alerts. Stock **search, quotes, price history (1D–5Y), company profiles, and a financial overview** are fetched live from [Twelve Data](https://twelvedata.com/) through a small Express server that keeps the API key out of the browser. Watchlists and **price alerts** are **stored per account** in a SQLite database behind a minimal session-based auth system, so they survive reloads and follow you across browsers/devices. When an alert triggers, an email is sent through **Resend** (idempotent per-trigger records, delivery webhooks, and a history UI with retry) whenever `RESEND_API_KEY` is configured. Reported fundamentals (P/E, EPS, dividend yield, revenue) require a paid plan and degrade to a clear unavailable state on the free tier. Market indices, top movers, and admin data remain deterministic **mock data**, and alerts are checked on demand (**Check now**) — there is no background evaluator or queue. See [Persistent watchlists (Phase 5)](#persistent-watchlists-phase-5), [News and sentiment (Phase 6)](#news-and-sentiment-phase-6), [Price alerts (Phase 7)](#price-alerts-phase-7), [Email notifications (Phase 8)](#email-notifications-phase-8), and [Market data API (Phase 3–4)](#market-data-api-phase-34).
 
 ## Overview
 
@@ -320,7 +320,7 @@ Status is **derived**, not stored: `disabled` when the enabled switch is off,
 condition or threshold, or re-enabling a disabled alert, clears `triggered_at`
 so the alert is armed again.
 
-There are **no background jobs and no emails** (Phases 8–9 territory). Alerts
+There are **no background jobs** (Phase 9 territory). Alerts
 are evaluated when you press **Check now** (`POST /api/alerts/evaluate`). Each
 check:
 
@@ -358,6 +358,133 @@ a local fallback); enabling/disabling is a switch and deletion requires
 confirmation. Pure helpers in `src/lib/alerts.ts` (condition labels,
 `describeAlertRule`, `filterAlerts`, `countAlertsByStatus`) keep the page thin
 and unit-testable (`tests/alerts.test.ts`).
+
+## Email notifications (Phase 8)
+
+When an alert transitions to **triggered**, the server records a notification
+and sends an email through a pluggable provider. Notifications live in SQLite
+(the `alert_notifications` table, migration `0003_notifications`) so a single
+trigger can never email twice, and each row tracks its delivery state.
+
+### Provider and why Resend
+
+Emails go through **[Resend](https://resend.com)**, called with the built-in
+`fetch` API (no new dependency). The free tier covers 100 emails/day, 3,000
+emails/month, and 10 requests/second, and delivery webhooks are available on all
+plans. The API key stays server-side, exactly like the market-data keys.
+
+The default sender is `onboarding@resend.dev`, which only delivers to the
+account owner's own address — fine for development. Production requires a
+**verified sending domain or address** in the Resend dashboard. SMTP/Nodemailer
+would be a drop-in alternative behind the same `EmailProvider` interface, but is
+not implemented.
+
+### Configuration (`server/.env`)
+
+| Variable                | Default                                      | Purpose                                        |
+| ----------------------- | -------------------------------------------- | ---------------------------------------------- |
+| `EMAIL_PROVIDER`        | `resend`                                     | `resend` or `none` (disable sending entirely)  |
+| `RESEND_API_KEY`        | — (optional)                                 | Resend API key; unset means sends fail as `not_configured` |
+| `EMAIL_FROM`            | `Stock Tracker <onboarding@resend.dev>`      | Verified sender for outgoing mail              |
+| `RESEND_WEBHOOK_SECRET` | — (optional)                                 | Svix signing secret for delivery webhooks      |
+| `EMAIL_TIMEOUT_MS`      | `8000`                                       | Per-send request timeout                       |
+| `APP_BASE_URL`          | `http://localhost:5173`                      | Base URL used for links inside emails          |
+
+Email is **optional**. With `RESEND_API_KEY` unset the app works exactly as
+before; trigger emails are recorded as `failed` with error code `not_configured`
+and the UI shows a setup notice instead of pretending to have sent anything.
+
+### Notification lifecycle
+
+| Status      | Meaning                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `pending`   | Row written, send attempt in flight                            |
+| `accepted`  | Provider accepted the message and returned a message id        |
+| `delivered` | Provider webhook confirmed delivery to the recipient's mailbox |
+| `failed`    | Send attempt failed (records a safe `error_code` + `error_message`) |
+
+- A notification row is inserted **before** the send attempt, and the database
+  enforces one row per `(alert, triggered_at)` — re-running evaluation can never
+  produce a duplicate email for the same trigger.
+- User preference `users.notify_price_alert_emails` (edited in Settings) gates
+  both the row and the email: when off, a trigger is silent.
+- `accepted` is **not** delivery. Only a signed webhook flips a row to
+  `delivered`; bounced/complained/failed events mark it `failed`.
+- Provider errors never fail the evaluation request — one bad address or a rate
+  limit is recorded on the row and surfaced in the UI. Stored error messages are
+  safe, server-authored text; provider payloads, API keys, and secrets are never
+  stored or logged.
+- Failed rows can be retried from the history UI (`POST .../resend`); the row is
+  reused and its `attempts` counter increments. A re-armed alert that triggers
+  again creates a new notification.
+
+### Email content
+
+One template (`server/src/services/emailTemplate.ts`, pure and unit-tested)
+renders a professional HTML body plus a plain-text fallback containing the
+symbol, company name, condition, threshold, triggering price, session change
+(for percentage conditions), the trigger timestamp (UTC), and links back to the
+stock page and the alerts dashboard. The footer explains how to turn the emails
+off.
+
+### Webhooks
+
+`POST /api/notifications/webhooks/resend` is public and authenticated only by
+the **Svix signature** (`svix-id`, `svix-timestamp`, `svix-signature`): an
+HMAC-SHA256 over `${id}.${timestamp}.${rawBody}` using the raw request body,
+compared in constant time with a 300-second tolerance. It returns `503` when
+`RESEND_WEBHOOK_SECRET` is unset and `401` for a missing, forged, or expired
+signature. Unknown message ids are acknowledged and ignored. Add the endpoint
+URL in the Resend dashboard (needs a publicly reachable URL — a local dev server
+will not receive events).
+
+### API endpoints
+
+| Method & path                                  | Description                                          |
+| ---------------------------------------------- | ---------------------------------------------------- |
+| `GET /api/notifications`                       | Notification history (50 most recent) + preferences + `emailConfigured` |
+| `PATCH /api/notifications/preferences`         | Enable/disable price-alert emails (`priceAlertEmails`) |
+| `POST /api/notifications/:id/resend`           | Retry a `failed` notification (`409` if not failed) |
+| `POST /api/notifications/webhooks/resend`      | Resend delivery webhook (signature-verified, public) |
+
+The first three require a session (`401` when signed out) and only ever touch
+the signed-in user's rows — another user's notification returns `404`.
+
+### Frontend
+
+`/alerts` gains an **Email notifications** card showing one row per trigger with
+a status badge (`Sent`/`Delivered`/`Failed`), recipient, timestamps, the failure
+reason, a **Retry** button for failed sends, and a manual refresh. When the
+server has no provider configured, the card explains that sends will fail rather
+than hiding the problem. **Settings → Notifications → Price alert emails** is now
+a real server-backed switch (disabled while signed out) that writes the same
+preference; the remaining toggles on that card stay local demo state.
+
+### Testing
+
+`server/src/notifications.test.ts` and
+`server/src/services/emailTemplate.test.ts` cover email rendering (including HTML
+escaping and percent vs price targets), a single email per trigger, duplicate
+protection across repeated evaluations, send failures that do not fail the
+evaluation request, `invalid_recipient`/`rate_limited` classification, the
+disabled preference, ownership isolation, retry rules, signed/unsigned/forged
+webhooks, and history retention after an alert is deleted. All of it runs
+against an in-memory `StubEmailProvider` — no real email is ever sent. Run with
+`npm run test:server` or `npm run test:all`.
+
+### Limitations
+
+- No queue or background worker: sending is inline with the evaluation request,
+  and there are no automatic retries — a failed send shows up in history and can
+  be retried manually (Phase 9 territory).
+- `accepted` is only delivery if a webhook confirms it; without
+  `RESEND_WEBHOOK_SECRET` history stops at `accepted`.
+- Account emails are never verified (auth has no verification flow), and there is
+  no unsubscribe link or bounce suppression list beyond the preference toggle.
+- The Resend free tier caps at 100 emails/day; triggering many alerts at once can
+  produce `rate_limited` failures.
+- History shows the 50 most recent rows per user.
+- Only price-alert emails exist; digests and news emails are not implemented.
 
 ## Market data API (Phase 3–4)
 
@@ -415,7 +542,10 @@ Browser ──/api/*──▶ Vite dev proxy ──▶ Express ──▶ Twelve 
 News-specific variables (`FINNHUB_API_KEY`, `NEWS_DATA_PROVIDER`,
 `NEWS_CREDITS_*`, `NEWS_PAGE_SIZE`, `CACHE_TTL_NEWS_SECONDS`) are documented in
 [News and sentiment (Phase 6)](#news-and-sentiment-phase-6). News is optional and
-degraded gracefully when `FINNHUB_API_KEY` is unset.
+degraded gracefully when `FINNHUB_API_KEY` is unset. The optional email variables
+(`EMAIL_PROVIDER`, `RESEND_API_KEY`, `EMAIL_FROM`, `RESEND_WEBHOOK_SECRET`,
+`EMAIL_TIMEOUT_MS`, `APP_BASE_URL`) are documented in
+[Email notifications (Phase 8)](#email-notifications-phase-8).
 
 ### API endpoints
 
@@ -555,7 +685,12 @@ access. News tests cover provider normalization (Unix→ms, ticker splitting,
 dropping invalid rows, key as a header, error mapping), sentiment analysis
 (lexicon polarity, negation, headline weighting, insufficient-sample handling),
 and the news routes (de-duplication, pagination, caching, not-configured `503`,
-uncached failures, stale-on-transient, and no secret leakage).
+uncached failures, stale-on-transient, and no secret leakage). Price-alert tests
+cover validation, evaluation against mock quotes/history, and per-user isolation;
+notification tests run against a stub email provider (no real sends) and cover
+template rendering and escaping, one email per trigger, duplicate protection,
+provider failures that do not fail the request, retry rules, ownership, and
+signed/unsigned/forged delivery webhooks.
 
 ### Frontend tests
 
@@ -571,7 +706,9 @@ price/percentage/compact formatting, and the watchlist join/sort helpers
 (`mergeWatchlist` keeping quote-less items, sort order including
 missing-quotes-last and tie-breaking, and freshness formatting). It also covers
 the news helpers (`mergeNewsArticles` ordering and de-duplication by id/URL, and
-`filterNewsArticles` search/sentiment filtering) and `formatRelativeToNow`.
+`filterNewsArticles` search/sentiment filtering), the alert helpers (rule
+descriptions, status counts, filtering, notification status labels), and
+`formatRelativeToNow`.
 Component rendering and responsive layout have no automated coverage in this
 project and are verified manually (see [Testing the interface](#testing-the-interface)).
 
@@ -640,6 +777,11 @@ multi-user — clearing site data or using another browser resets it:
 | Admin-managed news entries   | `stock-tracker:admin-news`      |
 | Local settings profile       | `stock-tracker:profile`         |
 
+The **price alert email** preference is no longer in this table: it is stored on
+your account (`users.notify_price_alert_emails`, migration `0003_notifications`)
+and survives across browsers. The remaining toggles on the Notifications card are
+still local demo state.
+
 Legacy keys from earlier phases (`stock-tracker:watchlist`,
 `stock-tracker:alerts`) may still exist in browsers; they are no longer read and
 are cleared by **Settings → Demo data → Reset demo data**, which does not affect
@@ -653,7 +795,9 @@ your server-saved watchlist or alerts.
 - Auth is intentionally minimal: email + password only, no email verification,
   password reset, account deletion, or OAuth. Sessions are long-lived cookies
   (7 days) and there is no cross-device session management UI.
-- Price alerts remain browser `localStorage` and are not tied to an account.
+- Price alerts are stored per account, but a notification email is only sent
+  when an alert triggers and the provider is configured; the app has no background
+  evaluator, so alerts are only checked when you press **Check now**.
 - Only search, quotes, price history, profiles, and news are live. Market
   indices, top movers, and admin data are still mock.
 - News depends on an optional Finnhub key; without it the news pages show a
@@ -672,7 +816,8 @@ your server-saved watchlist or alerts.
   intraday depth beyond a session, and no paid-only intervals are used).
 - Free-tier rate limits (8/min, 800/day) can produce occasional `429` responses.
 - No background jobs; price alerts are only evaluated when you press **Check
-  now**, and no emails are sent.
+  now**. Emails are sent inline during that check, with no automatic retries
+  (failed sends appear in notification history and can be retried manually).
 - The **Market News** page and the news sections on the dashboard and stock
   details pages are live; the admin dashboard's news manager remains a fictional
   in-browser demo (`localStorage`).
@@ -710,9 +855,15 @@ your server-saved watchlist or alerts.
 11. On a signed-out browser, visiting `/watchlist` redirects to `/login`.
 12. On `/alerts` (sign-out first to confirm the route redirects to `/login`), create an alert via live symbol search (try a negative target to see validation), toggle it off/on, press **Check now**, and delete it. Refresh — changes persist because they are saved on the server.
 13. On `/news`, filter by category/sentiment and open an article detail dialog.
-14. On `/settings`, switch the theme and change notification toggles, then refresh.
-15. On `/admin`, add/remove stock metadata and create/edit a news entry.
-16. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
+14. On `/alerts`, create an alert that is already satisfied (e.g. **price above** a
+    value below the current price), press **Check now**, and open the **Email
+    notifications** card. Without `RESEND_API_KEY` the row is `Failed` with a
+    setup notice; with a key it becomes `Sent` (and `Delivered` once the webhook
+    is configured). Confirm you can toggle the preference under
+    **Settings → Notifications → Price alert emails**.
+15. On `/settings`, switch the theme and change notification toggles, then refresh.
+16. On `/admin`, add/remove stock metadata and create/edit a news entry.
+17. Resize the browser to a mobile width and confirm the sidebar collapses into a drawer with no horizontal scrolling.
 
 For automated coverage run `npm run test:all` (frontend helpers + API server).
 A real-provider smoke test is optional: with a valid `STOCK_API_KEY`, open a
@@ -730,9 +881,9 @@ stock-tracker/
 │   │   ├── db/             # SQLite open + migration runner
 │   │   ├── lib/            # cache, budget, rate limit, validation, cookies, errors
 │   │   ├── middleware/     # session/auth middleware (requireAuth)
-│   │   ├── providers/      # TwelveDataProvider + provider interface
-│   │   ├── routes/         # /api/health, /api/stocks/*, /api/auth/*, /api/watchlist, /api/alerts
-│   │   ├── services/       # MarketDataService, AuthService, WatchlistService, PriceAlertService
+│   │   ├── providers/      # TwelveDataProvider, FinnhubNewsProvider, ResendEmailProvider + interfaces
+│   │   ├── routes/         # /api/health, /api/stocks/*, /api/auth/*, /api/watchlist, /api/alerts, /api/notifications
+│   │   ├── services/       # MarketDataService, AuthService, WatchlistService, PriceAlertService, NotificationService
 │   │   ├── testing/        # in-memory app/db fakes for tests
 │   │   ├── types/          # Express request augmentation
 │   │   ├── app.ts          # Express app factory (test-injectable)
@@ -777,7 +928,7 @@ The `@/*` import alias points at `src/`.
 5. Persistent watchlists ✅ *(per-account SQLite storage behind session-cookie auth)*
 6. News and market sentiment ✅ *(live Finnhub provider + local lexicon sentiment)*
 7. Price alerts ✅ *(per-account SQLite storage, four condition types, on-demand evaluation)*
-8. Email notifications
+8. Email notifications ✅ *(Resend via fetch, idempotent per-trigger records, signature-verified delivery webhooks, history UI)*
 9. Background workflows
 10. Admin dashboard
 11. UI polish

@@ -1,4 +1,10 @@
-import type { AlertCondition, NewsFeed, PriceAlert } from '@/types'
+import type {
+  AlertCondition,
+  AlertNotification,
+  NewsFeed,
+  NotificationPreferences,
+  PriceAlert,
+} from '@/types'
 
 export type DataStatus = 'real-time' | 'delayed' | 'end-of-day' | 'unknown'
 
@@ -484,6 +490,49 @@ export async function deleteAlert(id: string, signal?: AbortSignal): Promise<voi
 export function evaluateAlerts(signal?: AbortSignal): Promise<AlertsPayload> {
   return apiRequest<AlertsPayload>('/api/alerts/evaluate', {
     method: 'POST',
+    signal,
+  })
+}
+
+interface NotificationsPayload {
+  data: {
+    notifications: AlertNotification[]
+    count: number
+    preferences: NotificationPreferences
+    /** False when the server has no email credentials configured. */
+    emailConfigured: boolean
+  }
+}
+
+interface NotificationPayload {
+  data: { notification: AlertNotification }
+}
+
+interface NotificationPreferencesPayload {
+  data: { preferences: NotificationPreferences }
+}
+
+export function fetchNotifications(signal?: AbortSignal): Promise<NotificationsPayload> {
+  return apiRequest<NotificationsPayload>('/api/notifications', { signal })
+}
+
+export function resendNotification(
+  id: string,
+  signal?: AbortSignal,
+): Promise<NotificationPayload> {
+  return apiRequest<NotificationPayload>(
+    `/api/notifications/${encodeURIComponent(id)}/resend`,
+    { method: 'POST', signal },
+  )
+}
+
+export function updateNotificationPreferences(
+  priceAlertEmails: boolean,
+  signal?: AbortSignal,
+): Promise<NotificationPreferencesPayload> {
+  return apiRequest<NotificationPreferencesPayload>('/api/notifications/preferences', {
+    method: 'PATCH',
+    body: { priceAlertEmails },
     signal,
   })
 }

@@ -8,8 +8,10 @@ import { createAlertsRouter } from './routes/alerts.js'
 import { createAuthRouter } from './routes/auth.js'
 import { createHealthRouter } from './routes/health.js'
 import { createNewsRouter } from './routes/news.js'
+import { createNotificationsRouter } from './routes/notifications.js'
 import { createStocksRouter } from './routes/stocks.js'
 import { createWatchlistRouter } from './routes/watchlist.js'
+import { createEmailProvider, type EmailProvider } from './providers/index.js'
 import { AlertEvaluationService } from './services/alertEvaluationService.js'
 import { AuthService } from './services/authService.js'
 import {
@@ -18,6 +20,7 @@ import {
   type MarketDataService,
   type NewsService,
 } from './services/index.js'
+import { NotificationService } from './services/notificationService.js'
 import { PriceAlertService } from './services/priceAlertService.js'
 import { WatchlistService } from './services/watchlistService.js'
 
@@ -25,6 +28,8 @@ export interface CreateAppOptions {
   config?: AppConfig
   service?: MarketDataService
   newsService?: NewsService
+  /** Inject an email transport (tests use an in-memory stub). */
+  emailProvider?: EmailProvider
   /** Inject a database (tests use an in-memory instance); otherwise one is opened. */
   database?: DatabaseConnection
 }
@@ -55,9 +60,15 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
     sessionTtlSeconds: config.sessionTtlSeconds,
   })
   const watchlistService = new WatchlistService(database)
+  const emailProvider = options.emailProvider ?? createEmailProvider(config)
+  const notificationService = new NotificationService(database, emailProvider, {
+    emailFrom: config.emailFrom,
+    appBaseUrl: config.appBaseUrl,
+  })
   const alertService = new PriceAlertService(
     database,
     new AlertEvaluationService(service),
+    notificationService,
   )
 
   const app = express()
@@ -66,7 +77,15 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   // explicitly-allowed cross-origin requests. Configure CORS_ORIGIN precisely
   // when the API is served from a different origin than the app.
   app.use(cors({ origin: config.corsOrigin, credentials: true }))
-  app.use(express.json())
+  // `verify` keeps the raw body bytes available for webhook signature checks;
+  // parsed JSON alone would invalidate the signature.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as unknown as Request).rawBody = buf.toString('utf8')
+      },
+    }),
+  )
 
   app.use('/api', rateLimit(PUBLIC_RATE_LIMIT))
   app.use('/api/auth', rateLimit(AUTH_RATE_LIMIT))
@@ -76,6 +95,10 @@ export function createApp(options: CreateAppOptions = {}): express.Express {
   app.use('/api/auth', createAuthRouter(authService, config))
   app.use('/api/watchlist', createWatchlistRouter(watchlistService, authService, config))
   app.use('/api/alerts', createAlertsRouter(alertService, authService, config))
+  app.use(
+    '/api/notifications',
+    createNotificationsRouter(notificationService, authService, config),
+  )
 
   app.use('/api', (_req, res) => {
     res.status(404).json({

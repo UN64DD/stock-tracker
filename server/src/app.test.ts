@@ -159,6 +159,10 @@ const testConfig: AppConfig = {
   sessionTtlSeconds: 86_400,
   authCookieName: 'st_session',
   cookieSecure: false,
+  emailProvider: 'none',
+  emailFrom: 'Stock Tracker <test@example.com>',
+  emailTimeoutMs: 1000,
+  appBaseUrl: 'http://localhost:5173',
   cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000, news: 1000 },
 }
 

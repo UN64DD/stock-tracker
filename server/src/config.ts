@@ -38,6 +38,24 @@ export interface AppConfig {
   authCookieName: string
   /** Adds the `Secure` attribute to the session cookie (enable behind HTTPS). */
   cookieSecure: boolean
+  /**
+   * Email provider used for price-alert notifications. Only "resend" (REST via
+   * fetch) and "none" (explicitly disabled) are currently supported.
+   */
+  emailProvider: string
+  /** Email provider API key. Server-side only; never sent to the browser. */
+  emailApiKey?: string
+  /** Verified from-address, e.g. `Stock Tracker <alerts@example.com>`. */
+  emailFrom: string
+  /** Optional webhook signing secret; enables delivery-confirmed statuses. */
+  emailWebhookSecret?: string
+  /** Timeout for a single provider send attempt, in milliseconds. */
+  emailTimeoutMs: number
+  /**
+   * Public base URL of the app, used for links inside notification emails
+   * (stock detail page and alerts dashboard).
+   */
+  appBaseUrl: string
 }
 
 function readInt(value: string | undefined, fallback: number): number {
@@ -72,6 +90,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionTtlSeconds: readInt(env.SESSION_TTL_SECONDS, 604_800),
     authCookieName: readString(env.AUTH_COOKIE_NAME, 'st_session'),
     cookieSecure: readString(env.COOKIE_SECURE, 'false').toLowerCase() === 'true',
+    emailProvider: readString(env.EMAIL_PROVIDER, 'resend').toLowerCase(),
+    emailApiKey: env.RESEND_API_KEY?.trim() || undefined,
+    emailFrom: readString(env.EMAIL_FROM, 'Stock Tracker <onboarding@resend.dev>'),
+    emailWebhookSecret: env.RESEND_WEBHOOK_SECRET?.trim() || undefined,
+    emailTimeoutMs: readInt(env.EMAIL_TIMEOUT_MS, 8000),
+    appBaseUrl: readString(env.APP_BASE_URL, 'http://localhost:5173').replace(/\/+$/, ''),
     cacheTtl: {
       quote: readInt(env.CACHE_TTL_QUOTE_SECONDS, 60) * 1000,
       history: readInt(env.CACHE_TTL_HISTORY_SECONDS, 300) * 1000,

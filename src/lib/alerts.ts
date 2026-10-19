@@ -1,4 +1,9 @@
-import type { AlertCondition, AlertStatus, PriceAlert } from '@/types'
+import type {
+  AlertCondition,
+  AlertStatus,
+  NotificationStatus,
+  PriceAlert,
+} from '@/types'
 import { formatTarget } from '@/lib/format'
 
 export const alertConditionLabels: Record<AlertCondition, string> = {
@@ -23,6 +28,17 @@ export const alertStatusLabels: Record<AlertStatus, string> = {
   active: 'Active',
   triggered: 'Triggered',
   disabled: 'Disabled',
+}
+
+/**
+ * Delivery-state labels for notification history rows. "Sent" means the email
+ * provider accepted the message — only "Delivered" is confirmed via webhook.
+ */
+export const notificationStatusLabels: Record<NotificationStatus, string> = {
+  pending: 'Pending',
+  accepted: 'Sent',
+  delivered: 'Delivered',
+  failed: 'Failed',
 }
 
 export function describeAlertRule(

@@ -21,10 +21,18 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/contexts/toast-context'
 import { useTheme, type Theme } from '@/contexts/theme-context'
+import { useAlerts } from '@/contexts/alerts-context'
 import { useLocalStorage } from '@/hooks/useLocalStorage'
+import { isApiError } from '@/lib/api'
 import { STORAGE_KEYS, removeStorage } from '@/lib/storage'
 import { demoProfile } from '@/mocks/admin'
 import { cn } from '@/lib/utils'
+
+function messageFor(error: unknown): string {
+  if (isApiError(error)) return error.message
+  if (error instanceof Error) return error.message
+  return 'Please try again.'
+}
 
 interface ProfileForm {
   name: string
@@ -37,8 +45,8 @@ type NotificationPreferences = Record<string, boolean>
 const notificationOptions = [
   {
     key: 'priceAlerts',
-    title: 'Price alert activity',
-    description: 'Notify me when a demo alert condition is created or changed.',
+    title: 'Alert activity',
+    description: 'In-app notice when an alert is created or changed (local demo).',
   },
   {
     key: 'watchlistDigest',
@@ -73,6 +81,13 @@ const themeOptions: { value: Theme; label: string; icon: typeof Sun }[] = [
 export function SettingsPage() {
   const { toast } = useToast()
   const { theme, setTheme } = useTheme()
+  const {
+    isAuthenticated,
+    priceAlertEmails,
+    emailConfigured,
+    setPriceAlertEmails,
+  } = useAlerts()
+  const [emailPrefSaving, setEmailPrefSaving] = useState(false)
   const [profile, setProfile] = useLocalStorage<ProfileForm>(
     'stock-tracker:profile',
     {
@@ -104,8 +119,29 @@ export function SettingsPage() {
     })
   }
 
-  const resetDemoData = () => {
-    removeStorage(STORAGE_KEYS.watchlist)
+  const handleEmailPrefChange = async (checked: boolean) => {
+    setEmailPrefSaving(true)
+    try {
+      await setPriceAlertEmails(checked)
+      toast({
+        title: checked
+          ? 'Price alert emails enabled'
+          : 'Price alert emails disabled',
+        description: 'Saved to your account.',
+        variant: 'success',
+      })
+    } catch (prefError) {
+      toast({
+        title: 'Could not save preference',
+        description: messageFor(prefError),
+        variant: 'error',
+      })
+    } finally {
+      setEmailPrefSaving(false)
+    }
+  }
+
+  const resetDemoData = () => {    removeStorage(STORAGE_KEYS.watchlist)
     removeStorage(STORAGE_KEYS.alerts)
     removeStorage(STORAGE_KEYS.preferences)
     removeStorage(STORAGE_KEYS.adminStocks)
@@ -122,7 +158,7 @@ export function SettingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Settings"
-        description="Local prototype preferences. Nothing here requires real credentials."
+        description="Demo preferences save to this browser; price alert emails are saved to your account."
         badge={<DemoBadge label="Local only" />}
       />
 
@@ -269,20 +305,30 @@ export function SettingsPage() {
             </div>
           ))}
 
-          <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-dashed border-border bg-muted/30 p-3">
+          <div className="mt-4 flex items-start justify-between gap-4 rounded-lg border border-border p-3">
             <div>
               <p className="flex items-center gap-2 text-sm font-medium text-foreground">
                 <Mail className="size-4 text-muted-foreground" aria-hidden="true" />
-                Email notifications
+                Price alert emails
               </p>
               <p className="text-xs text-muted-foreground">
-                Requires a backend and email provider. Planned for a later
-                phase.
+                {isAuthenticated
+                  ? 'Sends an email to your account address whenever a price alert triggers. Delivery state is shown on the Price Alerts page.'
+                  : 'Sign in to get an email whenever a price alert triggers.'}
               </p>
+              {isAuthenticated && !emailConfigured ? (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                  This server has no email provider configured, so sends will
+                  fail until RESEND_API_KEY is set.
+                </p>
+              ) : null}
             </div>
-            <Button variant="outline" size="sm" disabled>
-              Coming soon
-            </Button>
+            <Switch
+              checked={isAuthenticated && priceAlertEmails}
+              disabled={!isAuthenticated || emailPrefSaving}
+              onCheckedChange={(checked) => void handleEmailPrefChange(checked)}
+              aria-label="Toggle price alert emails"
+            />
           </div>
         </CardContent>
       </Card>

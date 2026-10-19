@@ -6,6 +6,7 @@ import {
   type AlertStatus,
 } from './alertEvaluation.js'
 import type { AlertEvaluationService } from './alertEvaluationService.js'
+import type { NotificationService } from './notificationService.js'
 
 /** Guards against unbounded rows per account. */
 export const MAX_ALERTS_PER_USER = 200
@@ -106,6 +107,8 @@ export class PriceAlertService {
   constructor(
     private readonly db: DatabaseConnection,
     private readonly evaluator: AlertEvaluationService,
+    /** Optional: sends notification emails when an alert triggers. */
+    private readonly notifications?: NotificationService,
   ) {}
 
   private findOwnedRow(userId: string, id: string): AlertRow | undefined {
@@ -239,6 +242,10 @@ export class PriceAlertService {
    * Evaluates every enabled, not-yet-triggered alert for the user against the
    * latest prices and persists the outcome. A provider failure for one symbol
    * is skipped so it cannot block the rest of the batch.
+   *
+   * When an alert transitions to triggered, a notification row is recorded
+   * first (idempotent per trigger) and the email send is attempted inline;
+   * send failures are recorded on the notification and never fail the request.
    */
   async evaluate(userId: string, signal?: AbortSignal): Promise<PriceAlert[]> {
     const rows = this.db
@@ -249,15 +256,28 @@ export class PriceAlertService {
       )
       .all(userId) as AlertRow[]
 
-    const update = this.db.prepare(
+    const touch = this.db.prepare(
       `UPDATE price_alerts
           SET last_checked_at = @checkedAt,
               last_price = @lastPrice,
               baseline_price = @baselinePrice,
-              triggered_at = @triggeredAt,
               updated_at = @checkedAt
         WHERE id = @id AND user_id = @userId`,
     )
+
+    // Guarded by `triggered_at IS NULL` so two concurrent evaluations can
+    // never both fire a notification for the same transition.
+    const trigger = this.db.prepare(
+      `UPDATE price_alerts
+          SET last_checked_at = @checkedAt,
+              last_price = @lastPrice,
+              baseline_price = @baselinePrice,
+              triggered_at = @checkedAt,
+              updated_at = @checkedAt
+        WHERE id = @id AND user_id = @userId AND triggered_at IS NULL`,
+    )
+
+    const pendingNotifications: string[] = []
 
     for (const row of rows) {
       let evaluation
@@ -276,14 +296,41 @@ export class PriceAlertService {
       }
 
       const checkedAt = new Date().toISOString()
-      update.run({
-        id: row.id,
-        userId,
-        checkedAt,
-        lastPrice: evaluation.latestPrice,
-        baselinePrice: evaluation.baselinePrice,
-        triggeredAt: evaluation.triggered ? checkedAt : null,
-      })
+      if (evaluation.triggered) {
+        const won = trigger.run({
+          id: row.id,
+          userId,
+          checkedAt,
+          lastPrice: evaluation.latestPrice,
+          baselinePrice: evaluation.baselinePrice,
+        })
+        if (won.changes !== 1) continue
+
+        const notificationId = this.notifications?.recordTrigger({
+          userId,
+          alertId: row.id,
+          symbol: row.symbol,
+          companyName: row.name,
+          condition: row.condition,
+          threshold: row.threshold,
+          triggerPrice: evaluation.latestPrice,
+          changePercent: evaluation.changePercent,
+          triggeredAt: checkedAt,
+        })
+        if (notificationId) pendingNotifications.push(notificationId)
+      } else {
+        touch.run({
+          id: row.id,
+          userId,
+          checkedAt,
+          lastPrice: evaluation.latestPrice,
+          baselinePrice: evaluation.baselinePrice,
+        })
+      }
+    }
+
+    for (const notificationId of pendingNotifications) {
+      await this.notifications?.sendPending(notificationId)
     }
 
     return this.list(userId)

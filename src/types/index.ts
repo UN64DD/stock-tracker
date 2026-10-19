@@ -104,6 +104,36 @@ export type AlertCondition =
 
 export type AlertStatus = 'active' | 'triggered' | 'disabled'
 
+/** Delivery state of a triggered-alert notification email. */
+export type NotificationStatus = 'pending' | 'accepted' | 'delivered' | 'failed'
+
+export interface AlertNotification {
+  id: string
+  /** Null once the originating alert has been deleted (history is kept). */
+  alertId: string | null
+  recipientEmail: string
+  symbol: string
+  companyName: string | null
+  condition: AlertCondition
+  threshold: number
+  triggerPrice: number | null
+  changePercent: number | null
+  triggeredAt: string
+  status: NotificationStatus
+  providerMessageId: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  attempts: number
+  createdAt: string
+  lastAttemptAt: string | null
+  acceptedAt: string | null
+  deliveredAt: string | null
+}
+
+export interface NotificationPreferences {
+  priceAlertEmails: boolean
+}
+
 export interface PriceAlert {
   id: string
   symbol: string

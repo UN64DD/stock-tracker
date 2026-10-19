@@ -10,6 +10,12 @@ import { NewsService } from '../services/newsService.js'
 import { createSentimentService } from '../services/sentimentService.js'
 import type { NewsProvider, NormalizedNewsArticle } from '../providers/newsTypes.js'
 import type {
+  EmailMessage,
+  EmailProvider,
+  EmailSendResult,
+} from '../providers/emailTypes.js'
+import { EmailSendError } from '../providers/emailTypes.js'
+import type {
   CompanyProfile,
   HistoricalSeries,
   ReportedFundamentals,
@@ -35,6 +41,11 @@ export const TEST_CONFIG: AppConfig = {
   sessionTtlSeconds: 3600,
   authCookieName: 'st_session',
   cookieSecure: false,
+  emailProvider: 'stub',
+  emailFrom: 'Stock Tracker <test@example.com>',
+  emailWebhookSecret: 'whsec_test_secret',
+  emailTimeoutMs: 1000,
+  appBaseUrl: 'http://localhost:5173',
   cacheTtl: { quote: 1000, history: 1000, search: 1000, profile: 1000, financials: 1000, news: 1000 },
 }
 
@@ -141,11 +152,31 @@ class StubProvider implements StockProvider {
   }
 }
 
+/**
+ * In-memory email transport for tests. Records every message and lets a test
+ * simulate provider failures. No real email is ever sent.
+ */
+export class StubEmailProvider implements EmailProvider {
+  readonly name = 'stub'
+  readonly configured = true
+  readonly messages: EmailMessage[] = []
+  failure: EmailSendError | null = null
+  private counter = 0
+
+  async send(message: EmailMessage): Promise<EmailSendResult> {
+    if (this.failure) throw this.failure
+    this.messages.push(message)
+    this.counter += 1
+    return { id: `stub-message-${this.counter}` }
+  }
+}
+
 export interface TestApp {
   app: Express
   db: DatabaseConnection
   config: AppConfig
   newsProvider: StubNewsProvider
+  emailProvider: StubEmailProvider
 }
 
 /** Deterministic news used across tests (dates are fixed timestamps). */
@@ -249,7 +280,10 @@ export class StubNewsProvider implements NewsProvider {
 }
 
 /** Builds an app backed by a fresh in-memory SQLite database. */
-export function createTestApp(overrides: Partial<AppConfig> = {}): TestApp {
+export function createTestApp(
+  overrides: Partial<AppConfig> = {},
+  options: { emailProvider?: EmailProvider } = {},
+): TestApp {
   const config: AppConfig = { ...TEST_CONFIG, ...overrides }
   const service = new MarketDataService(
     new StubProvider(),
@@ -266,9 +300,11 @@ export function createTestApp(overrides: Partial<AppConfig> = {}): TestApp {
     createSentimentService(),
     config.newsPageSize,
   )
+  const emailProvider =
+    (options.emailProvider as StubEmailProvider | undefined) ?? new StubEmailProvider()
   const db = openDatabase({ databasePath: ':memory:' })
-  const app = createApp({ config, service, newsService, database: db })
-  return { app, db, config, newsProvider }
+  const app = createApp({ config, service, newsService, emailProvider, database: db })
+  return { app, db, config, newsProvider, emailProvider }
 }
 
 /** Extracts a `name=value` cookie pair from a response's Set-Cookie header. */

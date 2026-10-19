@@ -12,18 +12,21 @@ import {
   deleteAlert as deleteAlertRequest,
   evaluateAlerts as evaluateAlertsRequest,
   fetchAlerts,
+  fetchNotifications,
+  resendNotification as resendNotificationRequest,
   updateAlert as updateAlertRequest,
+  updateNotificationPreferences,
   type CreateAlertInput,
   type UpdateAlertInput,
 } from '@/lib/api'
-import type { PriceAlert } from '@/types'
+import type { AlertNotification, PriceAlert } from '@/types'
 import { useAuth } from './auth-context'
 import { AlertsContext, type AlertsContextValue } from './alerts-context'
 
 /**
- * Single source of truth for the signed-in user's price alerts. State is loaded
- * from the API and mutated there, then refetched, so the alerts page and the
- * admin preview always agree.
+ * Single source of truth for the signed-in user's price alerts and their
+ * notification history. State is loaded from the API and mutated there, then
+ * refetched, so the alerts page and the settings page always agree.
  */
 export function AlertsProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth()
@@ -32,7 +35,14 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<unknown>(null)
   const [isEvaluating, setIsEvaluating] = useState(false)
   const [pendingIds, setPendingIds] = useState<string[]>([])
+  const [notifications, setNotifications] = useState<AlertNotification[]>([])
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
+  const [notificationsError, setNotificationsError] = useState<unknown>(null)
+  const [pendingNotificationIds, setPendingNotificationIds] = useState<string[]>([])
+  const [priceAlertEmails, setPriceAlertEmailsState] = useState(true)
+  const [emailConfigured, setEmailConfigured] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
+  const notificationsAbortRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
     if (!user) {
@@ -60,16 +70,56 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     }
   }, [user])
 
+  const refreshNotifications = useCallback(async () => {
+    if (!user) {
+      setNotifications([])
+      setNotificationsError(null)
+      setNotificationsLoading(false)
+      return
+    }
+
+    notificationsAbortRef.current?.abort()
+    const controller = new AbortController()
+    notificationsAbortRef.current = controller
+    setNotificationsLoading(true)
+    setNotificationsError(null)
+
+    try {
+      const result = await fetchNotifications(controller.signal)
+      if (controller.signal.aborted) return
+      setNotifications(result.data.notifications)
+      setPriceAlertEmailsState(result.data.preferences.priceAlertEmails)
+      setEmailConfigured(result.data.emailConfigured)
+    } catch (loadError) {
+      if (controller.signal.aborted) return
+      setNotificationsError(loadError)
+    } finally {
+      if (!controller.signal.aborted) setNotificationsLoading(false)
+    }
+  }, [user])
+
   useEffect(() => {
     if (authLoading) return
     void load()
+    void refreshNotifications()
     return () => {
       abortRef.current?.abort()
+      notificationsAbortRef.current?.abort()
     }
-  }, [authLoading, load])
+  }, [authLoading, load, refreshNotifications])
 
   const markPending = useCallback((id: string, active: boolean) => {
     setPendingIds((previous) =>
+      active
+        ? previous.includes(id)
+          ? previous
+          : [...previous, id]
+        : previous.filter((item) => item !== id),
+    )
+  }, [])
+
+  const markNotificationPending = useCallback((id: string, active: boolean) => {
+    setPendingNotificationIds((previous) =>
       active
         ? previous.includes(id)
           ? previous
@@ -128,11 +178,49 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     try {
       const result = await evaluateAlertsRequest()
       setAlerts(result.data.alerts)
+      // Evaluation may have triggered notifications; refresh them alongside.
+      await refreshNotifications()
       return result.data.alerts
     } finally {
       setIsEvaluating(false)
     }
-  }, [user])
+  }, [user, refreshNotifications])
+
+  const resendNotification = useCallback(
+    async (id: string) => {
+      if (!user) throw new Error('You must be signed in to resend a notification.')
+      markNotificationPending(id, true)
+      try {
+        const result = await resendNotificationRequest(id)
+        const updated = result.data.notification
+        setNotifications((previous) =>
+          previous.map((item) => (item.id === updated.id ? updated : item)),
+        )
+        return updated
+      } finally {
+        markNotificationPending(id, false)
+      }
+    },
+    [user, markNotificationPending],
+  )
+
+  const setPriceAlertEmails = useCallback(
+    async (enabled: boolean) => {
+      if (!user) {
+        throw new Error('You must be signed in to change notification preferences.')
+      }
+      // Optimistic update; the server response is authoritative.
+      setPriceAlertEmailsState(enabled)
+      try {
+        const result = await updateNotificationPreferences(enabled)
+        setPriceAlertEmailsState(result.data.preferences.priceAlertEmails)
+      } catch (prefError) {
+        setPriceAlertEmailsState(!enabled)
+        throw prefError
+      }
+    },
+    [user],
+  )
 
   const value = useMemo<AlertsContextValue>(
     () => ({
@@ -149,6 +237,15 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
       setAlertEnabled,
       evaluateAlerts,
       refresh: load,
+      notifications,
+      notificationsLoading,
+      notificationsError,
+      pendingNotificationIds,
+      refreshNotifications,
+      resendNotification,
+      priceAlertEmails,
+      emailConfigured,
+      setPriceAlertEmails,
     }),
     [
       alerts,
@@ -163,6 +260,15 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
       setAlertEnabled,
       evaluateAlerts,
       load,
+      notifications,
+      notificationsLoading,
+      notificationsError,
+      pendingNotificationIds,
+      refreshNotifications,
+      resendNotification,
+      priceAlertEmails,
+      emailConfigured,
+      setPriceAlertEmails,
     ],
   )
 

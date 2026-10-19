@@ -5,6 +5,7 @@ import {
   describeAlertRule,
   filterAlerts,
   isPercentCondition,
+  notificationStatusLabels,
 } from '@/lib/alerts'
 
 function makeAlert(overrides: Partial<PriceAlert> & { id: string; symbol: string }): PriceAlert {
@@ -122,5 +123,16 @@ describe('countAlertsByStatus', () => {
 
   it('returns zeros for an empty list', () => {
     expect(countAlertsByStatus([])).toEqual({ active: 0, triggered: 0, disabled: 0 })
+  })
+})
+
+describe('notificationStatusLabels', () => {
+  it('labels every delivery state, keeping accepted distinct from delivered', () => {
+    expect(notificationStatusLabels).toEqual({
+      pending: 'Pending',
+      accepted: 'Sent',
+      delivered: 'Delivered',
+      failed: 'Failed',
+    })
   })
 })

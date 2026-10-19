@@ -10,6 +10,9 @@ interface RequestOptions {
   timeoutMs: number
   headers?: Record<string, string>
   signal?: AbortSignal
+  /** Defaults to GET; POST/PUT/PATCH send `body` verbatim. */
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH'
+  body?: string
 }
 
 /**
@@ -18,7 +21,7 @@ interface RequestOptions {
  */
 export async function fetchJson<T = unknown>(
   url: string,
-  { timeoutMs, headers, signal }: RequestOptions,
+  { timeoutMs, headers, signal, method = 'GET', body }: RequestOptions,
 ): Promise<JsonResponse<T>> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -28,8 +31,9 @@ export async function fetchJson<T = unknown>(
 
   try {
     const response = await fetch(url, {
-      method: 'GET',
+      method,
       headers: { accept: 'application/json', ...headers },
+      body,
       signal: controller.signal,
     })
 
